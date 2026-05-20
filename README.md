@@ -19,7 +19,8 @@ Optional (not copied by default): `ImproveGame/` (QoT mod), `TerrariaServer/` (s
 
 1. **Build** — see [docs/BUILD.md](docs/BUILD.md)
 2. **Inject & play** — see [docs/INSTALL.md](docs/INSTALL.md)
-3. **Multiplayer** — in-game mode `N` = handheld + explicit msg17; see docs for TShock notes
+3. In a world, press **`P`** to receive the Create Wand (item **6147**); vanilla has no drop for this item.
+4. **Multiplayer** — in-game mode `N` = handheld + explicit msg17; see docs for TShock notes
 
 ## Features (summary)
 
@@ -41,10 +42,30 @@ Optional (not copied by default): `ImproveGame/` (QoT mod), `TerrariaServer/` (s
 └── .gitignore
 ```
 
+## Hotkeys (summary)
+
+| Key | Needs wand in hand? | Action |
+|-----|---------------------|--------|
+| **`P`** | **No** (in-world) | Grant Create Wand (6147); cooldown if spammed |
+| `\` / `OemPipe` | Yes | Placement master toggle |
+| `N` | Yes | MP placement mode |
+| `1`–`3` | Yes | Presets |
+| `-` / `+` | Yes | Previous / next PNG blueprint |
+| `B` | Yes | Box-select export PNG |
+| `F9` / Shift+F9 / Ctrl+F9 | No (MP) | Net / tile-filter / rollback trace logs |
+
 ## Legal
 
 - Terraria is © Re-Logic. This is an unofficial fan patch.
 - MIT License — see [LICENSE](LICENSE).
+
+## Disclaimer (Vibe Coding)
+
+This project was developed **entirely through AI-assisted “vibe coding”** (human + LLM iteration). It is **not** professionally audited for stability, security, or anti-cheat compatibility.
+
+- Use at your own risk: crashes, save corruption, MP kicks, or antivirus blocking injection are possible.
+- Multiplayer / TShock paths are experimental.
+- Back up your characters and worlds before use. **Do not use if you do not accept these risks.**
 
 ## Internal / dev docs
 
