@@ -1,5 +1,7 @@
 # CreateWand Patch
 
+**中文说明：** [README.zh-CN.md](README.zh-CN.md)
+
 Harmony patch for Terraria **Create Wand** (item 6147): blueprint placement (PNG datamap + precise `cwmap` / qotstruct), multiplayer-friendly server-visible tiles on TShock, and an optional process injector.
 
 > **Note:** You need a legal copy of Terraria. This project does not redistribute game assets or binaries.
