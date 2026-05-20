@@ -168,8 +168,8 @@ namespace CreateWandPatch.Content
 		/// </summary>
 		public static bool EnableMpTileRollbackTrace;
 
-		/// <summary>开启后：凡条目含 <c>PreciseData</c>（cwmap、qotstruct 解析、或与 PNG 同 stem 同尺寸的 .cwmap）走 <c>PreciseCopy</c>。</summary>
-		public static bool EnablePreciseCwmapPlacement;
+		/// <summary>开启后：凡条目含 <c>PreciseData</c>（cwmap、qotstruct 解析、或与 PNG 同 stem 同尺寸的 .cwmap）走 <c>PreciseCopy</c>。默认开；<c>;</c> 或面板可关。</summary>
+		public static bool EnablePreciseCwmapPlacement = true;
 
 		public static bool UseStaggeredPlacementEffective => UseStaggeredPlacement;
 

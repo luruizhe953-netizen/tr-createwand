@@ -52,6 +52,7 @@ Optional (not copied by default): `ImproveGame/` (QoT mod), `TerrariaServer/` (s
 | `1`–`3` | Yes | Presets |
 | `-` / `+` | Yes | Previous / next PNG blueprint |
 | `B` | Yes | Box-select export PNG |
+| `;` | Yes | Toggle precise blueprint placement (**on by default**) |
 | `F9` / Shift+F9 / Ctrl+F9 | No (MP) | Net / tile-filter / rollback trace logs |
 
 ## Legal

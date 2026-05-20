@@ -80,7 +80,7 @@ dotnet build "TerrariaPatchLoader\TerrariaLoader\TerrariaLoader.csproj" -c Relea
 | `1` / `2` / `3` | 是 | 三种预设 |
 | `-` / `+` | 是 | 上一张 / 下一张 PNG 蓝图 |
 | `B` | 是 | 框选导出 PNG 蓝图 |
-| `;` | 是 | 切换精确放置（cwmap / qotstruct 等） |
+| `;` | 是 | 切换精确放置（**默认开**；cwmap / qotstruct / PNG+同名 cwmap） |
 | `F9` | 否（联机） | 开关网络调试日志 |
 | `Shift+F9` | 否（联机） | 仅图格相关 msg 过滤 |
 | `Ctrl+F9` | 否（联机） | 开关铺砖「闪回」检测日志 |

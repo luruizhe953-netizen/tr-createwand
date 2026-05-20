@@ -6,7 +6,7 @@
 2. Copy everything from `TerrariaPatchLoader/TerrariaLoader/bin/Release/net472/` to one folder.
 3. Start Terraria (main menu or in-world).
 4. Run `TerrariaLoader.exe` as administrator if injection fails.
-5. In-world: press **`P`** to obtain Create Wand (item **6147**), then load a blueprint and use patch hotkeys.
+5. In-game: obtain Create Wand (item **6147**), load a blueprint, use patch hotkeys.
 
 Details: `TerrariaPatchLoader/使用说明.txt` (Chinese).
 
