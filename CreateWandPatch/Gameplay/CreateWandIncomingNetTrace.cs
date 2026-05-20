@@ -34,7 +34,7 @@ namespace CreateWandPatch.Gameplay
 				string full = DateTime.Now.ToString("HH:mm:ss.fff") + " " + line + Environment.NewLine;
 				lock (Gate)
 				{
-					File.AppendAllText(path, full);
+					CreateWandLogFileWriter.AppendUtf8(path, full);
 				}
 			}
 			catch

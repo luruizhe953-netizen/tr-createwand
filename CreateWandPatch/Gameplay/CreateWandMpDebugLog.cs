@@ -69,7 +69,7 @@ namespace CreateWandPatch.Gameplay
 			string line = DateTime.Now.ToString("HH:mm:ss.fff") + " " + message + Environment.NewLine;
 			lock (Gate)
 			{
-				File.AppendAllText(path, line);
+				CreateWandLogFileWriter.AppendUtf8(path, line);
 			}
 		}
 

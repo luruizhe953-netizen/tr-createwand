@@ -45,11 +45,11 @@ namespace TerrariaPatchInjector
 				// 在主域内执行初始化（DoCallBack 的静态方法需在主域能找到的程序集里）
 				defaultDomain.DoCallBack(new CrossAppDomainDelegate(RunInDefaultDomain));
 
-				File.AppendAllText(logPath, DateTime.Now + " Bootstrap.Init() finished.\r\n");
+				CappedLogFile.AppendUtf8(logPath, DateTime.Now + " Bootstrap.Init() finished.\r\n");
 			}
 			catch (Exception ex)
 			{
-				try { File.WriteAllText(errPath, ex.ToString()); } catch { }
+				try { CappedLogFile.WriteUtf8Capped(errPath, ex.ToString()); } catch { }
 				throw;
 			}
 		}
@@ -107,8 +107,12 @@ namespace TerrariaPatchInjector
 			}
 			catch (Exception ex)
 			{
-				try { File.AppendAllText(Path.Combine(desktop, "CreateWandPatch-harmony.txt"),
-					DateTime.Now + " RunInDefaultDomain ERR: " + ex + "\r\n"); } catch { }
+				try
+				{
+					CappedLogFile.AppendUtf8(Path.Combine(desktop, "CreateWandPatch-harmony.txt"),
+						DateTime.Now + " RunInDefaultDomain ERR: " + ex + "\r\n");
+				}
+				catch { }
 				throw;
 			}
 		}

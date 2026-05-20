@@ -144,7 +144,7 @@ namespace CreateWandPatch.Content
 		/// <summary>
 		/// 为 true 时魔杖联机放置动作写入文本日志（魔杖代码路径内显式调用的发包），便于对照 <c>MessageID</c>。
 		/// 默认开。路径优先：环境变量 <c>CREATEWAND_MP_LOG_PATH</c> 或 <c>CREATEWAND_MP_LOG_DIR</c>；否则
-		/// <c>My Games\Terraria\CreateWand\CreateWandPatch-mp.log</c>；或 DLL 旁 <c>logs\CreateWandPatch-mp.log</c>。
+		/// <c>My Games\Terraria\CreateWand\CreateWandPatch-mp.log</c>；或 DLL 旁 <c>logs\CreateWandPatch-mp.log</c>。单文件上限 20KB（保留最新尾部）。
 		/// 关为 false 可省 IO。
 		/// </summary>
 		public static bool EnableMpActionTrace = true;
@@ -152,7 +152,7 @@ namespace CreateWandPatch.Content
 		/// <summary>
 		/// 联机客户端为 <c>true</c> 时，经 Harmony 记录：<c>NetMessage.SendData</c>（上行）与 <c>MessageBuffer.GetData</c>（下行）；
 		/// 普通手持铺砖亦走 SendData，与魔杖无关。
-		/// 默认关。日志：<c>CreateWandPatch-outgoing-net.log</c>、<c>CreateWandPatch-incoming-net.log</c>
+		/// 默认关。日志：<c>CreateWandPatch-outgoing-net.log</c>、<c>CreateWandPatch-incoming-net.log</c>（各 20KB 上限）
 		/// （或 <c>CREATEWAND_OUTGOING_*</c> / <c>CREATEWAND_INCOMING_*</c> 环境变量）。
 		/// 按 **F9** 切换（不需持有魔杖）。
 		/// </summary>

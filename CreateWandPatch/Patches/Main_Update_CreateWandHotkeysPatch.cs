@@ -319,7 +319,7 @@ namespace CreateWandPatch.Patches
 
 				try
 				{
-					System.IO.File.AppendAllText(
+					CreateWandPatch.Gameplay.CreateWandLogFileWriter.AppendUtf8(
 						System.IO.Path.Combine(System.Environment.GetFolderPath(System.Environment.SpecialFolder.Desktop),
 							"CreateWandPatch-harmony.txt"),
 						System.DateTime.Now + " GiveCreateWand ERR: " + ex + System.Environment.NewLine);

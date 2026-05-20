@@ -58,7 +58,7 @@ namespace CreateWandPatch
 			}
 			finally
 			{
-				try { File.AppendAllText(LogPath, sb.ToString()); } catch { }
+				try { CreateWandPatch.Gameplay.CreateWandLogFileWriter.AppendUtf8(LogPath, sb.ToString()); } catch { }
 			}
 		}
 	}
