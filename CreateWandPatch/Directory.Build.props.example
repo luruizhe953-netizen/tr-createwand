@@ -1,0 +1,13 @@
+<Project>
+
+  <!-- 复制此文件为 Directory.Build.props（与 CreateWandPatch.csproj 同目录），把路径改成你电脑上的泰拉安装目录 -->
+
+  <PropertyGroup>
+
+    <TerrariaSteam>C:\Program Files (x86)\Steam\steamapps\common\Terraria</TerrariaSteam>
+
+  </PropertyGroup>
+
+</Project>
+
+

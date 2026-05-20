@@ -1,0 +1,46 @@
+# Build outputs
+**/bin/
+**/obj/
+**/.vs/
+
+# User / local Terraria paths
+**/Directory.Build.props.user
+CreateWandPatch/lib/*.dll
+CreateWandPatch/lib/*.exe
+!CreateWandPatch/lib/说明.txt
+
+# Logs & debug
+*.log
+CreateWandPatch-mp.log
+TerrariaPatchInjector-*.txt
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+*.user
+*.suo
+.idea/
+.vscode/
+
+# Secrets & private handoff (keep in local workspace only)
+HANDOFF_*.md
+**/my_clean.pem
+**/*.pem
+.env
+.env.*
+
+# Large local mirrors (do not publish)
+TerrariaServer/
+tmp_ilspy/
+备份/
+backups/
+新建文件夹/
+CreateWandPatch2/
+TilePlacementSmokeTest/
+
+# Staging output from prepare script (optional local clone)
+repo-staging/
+
+# Release zip artifacts (upload via GitHub Releases instead)
+dist/*.zip
+!dist/.gitkeep

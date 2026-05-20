@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net472</TargetFramework>
+    <OutputType>Library</OutputType>
+    <Nullable>disable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <PlatformTarget>x86</PlatformTarget>
+    <RegisterForComInterop>false</RegisterForComInterop>
+    <AssemblyName>TerrariaPatchInjector</AssemblyName>
+    <RootNamespace>TerrariaPatchInjector</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="EasyHook" Version="2.7.7097" />
+  </ItemGroup>
+  <!-- CreateWandPatch 在运行时通过 Assembly.Load(byte[]) 动态载入，不做编译期引用 -->
+  <ItemGroup>
+    <ProjectReference Include="..\..\CreateWandPatch\CreateWandPatch.csproj">
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+    </ProjectReference>
+  </ItemGroup>
+</Project>

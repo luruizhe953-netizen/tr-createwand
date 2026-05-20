@@ -1,0 +1,104 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    游戏目录需有 Terraria.exe + ReLogic.dll。
+    图形栈二选一（编译期）：
+    - 同目录有 FNA.dll → 引用 FNA（常见于带 FNA 的发行）
+    - 无 FNA.dll → 引用本机 XNA 4：优先 XNA Game Studio 的 References\x86，其次 lib\ 手动拷贝的 DLL
+    运行时在泰拉进程内，类型与宿主一致即可。
+  -->
+  <PropertyGroup>
+    <TerrariaSteam Condition="'$(TerrariaSteam)' == ''">D:\SteamLibrary\steamapps\common\Terraria</TerrariaSteam>
+    <TargetFramework>net472</TargetFramework>
+    <Nullable>disable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <PlatformTarget>x86</PlatformTarget>
+    <RootNamespace>CreateWandPatch</RootNamespace>
+    <AssemblyName>CreateWandPatch</AssemblyName>
+    <_XnaRef86>$(MSBuildProgramFiles32)\Microsoft XNA\XNA Game Studio\v4.0\References\Windows\x86</_XnaRef86>
+  </PropertyGroup>
+
+  <Choose>
+    <When Condition="Exists('$(TerrariaSteam)\Terraria.exe') And Exists('$(TerrariaSteam)\ReLogic.dll')">
+      <PropertyGroup>
+        <GameLibDir>$(TerrariaSteam)</GameLibDir>
+      </PropertyGroup>
+    </When>
+    <When Condition="Exists('$(MSBuildProjectDirectory)\lib\Terraria.exe') And Exists('$(MSBuildProjectDirectory)\lib\ReLogic.dll')">
+      <PropertyGroup>
+        <GameLibDir>$(MSBuildProjectDirectory)\lib</GameLibDir>
+      </PropertyGroup>
+    </When>
+    <Otherwise>
+      <PropertyGroup>
+        <GameLibDir />
+      </PropertyGroup>
+    </Otherwise>
+  </Choose>
+
+  <Target Name="ErrTerrariaRefs" BeforeTargets="ResolveAssemblyReferences" Condition="'$(GameLibDir)' == ''">
+    <Error Text="找不到 Terraria.exe 或 ReLogic.dll。已检查：$(TerrariaSteam)。请改 Directory.Build.props 中的 TerrariaSteam 或复制到 lib\。" />
+  </Target>
+
+  <Target Name="ErrNoGraphicsRefs" BeforeTargets="ResolveAssemblyReferences" Condition="'$(GameLibDir)' != '' And !Exists('$(GameLibDir)\FNA.dll') And !Exists('$(_XnaRef86)\Microsoft.Xna.Framework.dll') And !Exists('$(MSBuildProjectDirectory)\lib\Microsoft.Xna.Framework.dll')">
+    <Error Text="游戏目录无 FNA.dll（部分 Windows 版泰拉用 XNA 4，不自带 FNA）。请安装「Microsoft XNA Framework Redistributable 4.0」或安装 XNA Game Studio 组件；也可把 Microsoft.Xna.Framework.dll 与 Microsoft.Xna.Framework.Game.dll 从本机 GAC 或 XNA 引用目录复制到 CreateWandPatch\lib\。详见 lib\说明.txt。" />
+  </Target>
+
+  <ItemGroup>
+    <PackageReference Include="Lib.Harmony" Version="2.3.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="System.Drawing" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(GameLibDir)' != ''">
+    <Reference Include="Terraria">
+      <HintPath>$(GameLibDir)\Terraria.exe</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="ReLogic">
+      <HintPath>$(GameLibDir)\ReLogic.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="FNA" Condition="Exists('$(GameLibDir)\FNA.dll')">
+      <HintPath>$(GameLibDir)\FNA.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <!-- 无 FNA 时使用 XNA 4 引用目录（与 Terraria XNA 版命名空间一致） -->
+  <ItemGroup Condition="'$(GameLibDir)' != '' And !Exists('$(GameLibDir)\FNA.dll') And Exists('$(_XnaRef86)\Microsoft.Xna.Framework.dll')">
+    <Reference Include="Microsoft.Xna.Framework">
+      <HintPath>$(_XnaRef86)\Microsoft.Xna.Framework.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Microsoft.Xna.Framework.Game" Condition="Exists('$(_XnaRef86)\Microsoft.Xna.Framework.Game.dll')">
+      <HintPath>$(_XnaRef86)\Microsoft.Xna.Framework.Game.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Microsoft.Xna.Framework.Graphics" Condition="Exists('$(_XnaRef86)\Microsoft.Xna.Framework.Graphics.dll')">
+      <HintPath>$(_XnaRef86)\Microsoft.Xna.Framework.Graphics.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(GameLibDir)' != '' And !Exists('$(GameLibDir)\FNA.dll') And !Exists('$(_XnaRef86)\Microsoft.Xna.Framework.dll') And Exists('$(MSBuildProjectDirectory)\lib\Microsoft.Xna.Framework.dll')">
+    <Reference Include="Microsoft.Xna.Framework">
+      <HintPath>$(MSBuildProjectDirectory)\lib\Microsoft.Xna.Framework.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Microsoft.Xna.Framework.Game" Condition="Exists('$(MSBuildProjectDirectory)\lib\Microsoft.Xna.Framework.Game.dll')">
+      <HintPath>$(MSBuildProjectDirectory)\lib\Microsoft.Xna.Framework.Game.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Microsoft.Xna.Framework.Graphics" Condition="Exists('$(MSBuildProjectDirectory)\lib\Microsoft.Xna.Framework.Graphics.dll')">
+      <HintPath>$(MSBuildProjectDirectory)\lib\Microsoft.Xna.Framework.Graphics.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Remove="tools\**\*.cs" />
+  </ItemGroup>
+</Project>

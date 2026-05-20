@@ -1,0 +1,16 @@
+本目录可选：放置 Terraria.exe / ReLogic.dll（用于离线引用）。
+
+若无 FNA.dll（Steam Windows 常见）：编译需要 Microsoft.Xna.Framework（与游戏运行时一致）。
+
+方式 A — 已安装 XNA 4 / XNA Game Studio
+  一般无需复制，CreateWandPatch.csproj 会自动使用：
+  Program Files (x86)\Microsoft XNA\XNA Game Studio\v4.0\References\Windows\x86\
+  下的 Microsoft.Xna.Framework.dll、Microsoft.Xna.Framework.Game.dll
+
+方式 B — 手动拷贝到本 lib 文件夹
+  从上述 x86 目录，或从 GAC（需与本机 .NET/XNA 版本匹配）复制：
+    Microsoft.Xna.Framework.dll
+    Microsoft.Xna.Framework.Game.dll
+  然后再 dotnet build。
+
+说明：不建议从 Terraria.exe「扒」DLL；托管引用应使用官方 XNA 或游戏目录里的 FNA.dll。

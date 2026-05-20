@@ -1,0 +1,32 @@
+这是什么
+  CreateWandPatch.dll = 注入后由 Bootstrap.Init() 加载的 Harmony 补丁（详见 TerrariaPatchLoader\使用说明.txt）。
+
+编译要求
+  必须能引用 Terraria.exe、FNA.dll、ReLogic.dll（三者缺一不可）。
+
+  任选其一：
+  A) 编辑 CreateWandPatch\Directory.Build.props 里的 TerrariaSteam（推荐，编解决方案时一定生效）。
+  B) 命令行（路径有空格要加引号）：
+       dotnet build -c Release -p:TerrariaSteam="D:\SteamLibrary\steamapps\common\Terraria"
+  C) 把 Terraria.exe、FNA.dll、ReLogic.dll 复制到 CreateWandPatch\lib\（见 lib\说明.txt）。
+
+  若没有 FNA.dll：多为 Windows XNA 版泰拉，工程会自动改用本机 XNA 4 引用（见 lib\说明.txt）；亦可把 Framework DLL 放到 lib\。
+
+  若提示找不到 FNA：说明 TerrariaSteam 指错了目录，或该目录里根本没有 FNA.dll（请用资源管理器确认）。
+
+  在本目录执行：
+    dotnet build -c Release
+  输出：bin\Release\net472\CreateWandPatch.dll 与 0Harmony.dll
+
+单机创造魔杖（当前实现）
+  - 物品 ID 6147（原版 ItemID.CreateWand）：属性与贴图均由游戏本体 SetDefaults / TextureAssets 提供（不再借用 213）。
+  - 左键：在可建筑区域按你选中的预设或 PNG 蓝图放置（不耗背包材料；逻辑在 CreateWandSinglePlayerService）。
+  - 蓝图：My Games\Terraria\CreateWand\*.png（与 ImproveGame datamap 颜色编码一致）。
+  - 热键（手持 6147 时）：1/2/3 = 三种预设，[ / ] = 上一张/下一张 PNG 并切到 DataMap 模式。
+  - 世界预览：手持 6147 时在藤蔓层后绘制半透明蓝图（TileDrawing.DrawReverseVines Postfix）。
+
+获取物品 6147
+  原版无掉落；可用旅途复制、存档编辑或注入补丁按 P 给予。背包里为原版创造魔杖图标。
+
+联机
+  当前补丁主要面向单机；联机发包尚未接。

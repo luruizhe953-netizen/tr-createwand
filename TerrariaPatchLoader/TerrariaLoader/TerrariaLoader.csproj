@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net472</TargetFramework>
+    <Nullable>disable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <PlatformTarget>x86</PlatformTarget>
+    <AssemblyName>TerrariaLoader</AssemblyName>
+    <RootNamespace>TerrariaLoader</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="EasyHook" Version="2.7.7097" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\TerrariaPatchInjector\TerrariaPatchInjector.csproj">
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+    </ProjectReference>
+  </ItemGroup>
+
+  <Target Name="CopyPayloadDlls" AfterTargets="Build">
+    <PropertyGroup>
+      <_InjectorDir>$(MSBuildThisFileDirectory)..\TerrariaPatchInjector\bin\$(Configuration)\net472\</_InjectorDir>
+      <_PatchDir>$(MSBuildThisFileDirectory)..\..\CreateWandPatch\bin\$(Configuration)\net472\</_PatchDir>
+    </PropertyGroup>
+    <Copy SourceFiles="$(_InjectorDir)TerrariaPatchInjector.dll" DestinationFolder="$(OutputPath)" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="$(_PatchDir)CreateWandPatch.dll" DestinationFolder="$(OutputPath)" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="$(_PatchDir)0Harmony.dll" DestinationFolder="$(OutputPath)" SkipUnchangedFiles="true" />
+  </Target>
+</Project>

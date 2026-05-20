@@ -1,0 +1,32 @@
+TerrariaLoader / TerrariaPatchInjector — 用途
+  将 CreateWandPatch（Harmony 补丁）注入「已在运行」的 64 位 Terraria.exe，并调用 Bootstrap.Init()。
+
+你需要准备的文件（同一文件夹）
+  TerrariaLoader.exe
+  EasyHook.dll / EasyHook64.dll / EasyHook32.dll（及包内其它 Easy*.dll、Easy*.exe）
+  TerrariaPatchInjector.dll
+  CreateWandPatch.dll
+  0Harmony.dll
+
+如何生成上述文件
+  在仓库根目录执行：
+    dotnet build "TerrariaPatchLoader\TerrariaLoader\TerrariaLoader.csproj" -c Release
+  输出目录：
+    TerrariaPatchLoader\TerrariaLoader\bin\Release\net472\
+  （生成后会自动把 TerrariaPatchInjector.dll、CreateWandPatch.dll、0Harmony.dll 复制到该目录。）
+
+如何启动
+  1. 先启动泰拉瑞亚（或让 Loader 替你启动，见下）。
+  2. 运行 TerrariaLoader.exe（建议「以管理员身份运行」，若注入失败可再试）。
+  3. 成功时桌面可能出现 TerrariaPatchInjector-ok.txt；进世界后按住 LeftShift 可测试半透明格子预览。
+
+可选参数
+  TerrariaLoader.exe "D:\你的路径\Terraria.exe"
+  未传参数时，若检测不到 Terraria 进程，会尝试启动默认路径：
+    D:\SteamLibrary\steamapps\common\Terraria\Terraria.exe
+  请按本机安装位置修改 TerrariaLoader\Program.cs 中的默认路径，或使用参数。
+
+注意
+  - 仅支持 64 位泰拉（Steam 正式版通常为 x64）。
+  - 杀毒/Windows Defender 可能拦截 EasyHook，需自行放行或加排除。
+  - 本工具仅用于你本机修改自有游戏进程；请勿用于未授权软件。
