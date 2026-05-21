@@ -1763,65 +1763,51 @@ namespace CreateWandPatch.Gameplay
 
 
 		/// <summary>
-		/// 钢丝钳模拟：直接 WorldGen.KillWire（不换持任何物品）+ msg17，再本地回退。
-		/// 联机非仅本地时先发 KillWire 方法再补 msg17；仅本地只调 WorldGen。
+		/// 钢丝钳(ID=510)模拟：换持一次 → WorldGen.KillWire 全色 → msg17 → 本地回退。
+		/// 一把剪红/蓝/绿/黄四色线 + 制动器，只需一次换持。
 		/// </summary>
 		private static void ClearWiresAtCell(Terraria.Player player, int x, int y)
 		{
+			const int WireCutterItemId = 510;
 			Tile t = Main.tile[x, y];
 			if (t == null)
 				return;
 
+			bool hasWire = t.wire() || t.wire2() || t.wire3() || t.wire4();
+			bool hasActuator = t.actuator();
+			if (!hasWire && !hasActuator)
+				return;
+
 			bool isMp = Main.netMode == 1 && !CreateWandSelectionState.MpLocalOnlyNoNet;
 
-			// 红线 → WorldGen.KillWire + msg17 action=6
-			if (t.wire())
+			if (isMp)
 			{
-				WorldGen.KillWire(x, y);
-				if (isMp)
-					NetMessage.SendData((int)MessageID.TileManipulation, -1, -1, null, 6, x, y);
-				t.wire(false);
+				CreateWandSurvivalRemoteCompat.TryExecuteHandheldTool(player, x, y, WireCutterItemId, () =>
+				{
+					if (t.wire()) { WorldGen.KillWire(x, y); NetMessage.SendData((int)MessageID.TileManipulation, -1, -1, null, 6, x, y); }
+					if (t.wire2()) { WorldGen.KillWire2(x, y); NetMessage.SendData((int)MessageID.TileManipulation, -1, -1, null, 11, x, y); }
+					if (t.wire3()) { WorldGen.KillWire3(x, y); NetMessage.SendData((int)MessageID.TileManipulation, -1, -1, null, 13, x, y); }
+					if (t.wire4()) { WorldGen.KillWire4(x, y); NetMessage.SendData((int)MessageID.TileManipulation, -1, -1, null, 17, x, y); }
+					if (t.actuator()) { WorldGen.KillActuator(x, y); NetMessage.SendData((int)MessageID.TileManipulation, -1, -1, null, 9, x, y); }
+					return true;
+				});
+			}
+			else
+			{
+				if (t.wire()) WorldGen.KillWire(x, y);
+				if (t.wire2()) WorldGen.KillWire2(x, y);
+				if (t.wire3()) WorldGen.KillWire3(x, y);
+				if (t.wire4()) WorldGen.KillWire4(x, y);
+				if (t.actuator()) WorldGen.KillActuator(x, y);
 			}
 
-			// 蓝线 → WorldGen.KillWire2 + msg17 action=11
-			if (t.wire2())
-			{
-				WorldGen.KillWire2(x, y);
-				if (isMp)
-					NetMessage.SendData((int)MessageID.TileManipulation, -1, -1, null, 11, x, y);
-				t.wire2(false);
-			}
-
-			// 绿线 → WorldGen.KillWire3 + msg17 action=13
-			if (t.wire3())
-			{
-				WorldGen.KillWire3(x, y);
-				if (isMp)
-					NetMessage.SendData((int)MessageID.TileManipulation, -1, -1, null, 13, x, y);
-				t.wire3(false);
-			}
-
-			// 黄线 → WorldGen.KillWire4 + msg17 action=17
-			if (t.wire4())
-			{
-				WorldGen.KillWire4(x, y);
-				if (isMp)
-					NetMessage.SendData((int)MessageID.TileManipulation, -1, -1, null, 17, x, y);
-				t.wire4(false);
-			}
-
-			// 制动器 → WorldGen.KillActuator + msg17 action=9
-			if (t.actuator())
-			{
-				WorldGen.KillActuator(x, y);
-				if (isMp)
-					NetMessage.SendData((int)MessageID.TileManipulation, -1, -1, null, 9, x, y);
-				t.actuator(false);
-			}
+			// 本地回退兜底
+			t.wire(false);
+			t.wire2(false);
+			t.wire3(false);
+			t.wire4(false);
+			t.actuator(false);
 		}
-
-		/// <summary>
-		/// 「仅删除」模式一键全清：立即遍历蓝图所有格子，发送 KillTile/KillWall/KillWire，
 		/// 不走逐格队列。联机仅本地则直接 ClearEverything。
 		/// </summary>
 		public static void ClearEntireBlueprintFast(Terraria.Player player, BuildingData data, int originX, int originY)
