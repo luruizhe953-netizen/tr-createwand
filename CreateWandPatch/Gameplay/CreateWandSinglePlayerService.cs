@@ -198,8 +198,7 @@ namespace CreateWandPatch.Gameplay
 					return false;
 				}
 
-				bool shouldUseQueuedPlacement = Main.netMode == 1 || CreateWandSelectionState.UseStaggeredPlacement;
-				if (shouldUseQueuedPlacement)
+				if (ShouldUseQueuedBlueprintPlacement())
 				{
 					if (CreateWandStaggeredPlacementQueue.IsBusy)
 					{
@@ -221,8 +220,7 @@ namespace CreateWandPatch.Gameplay
 			if (preset > 2)
 				return false;
 
-			bool shouldUseQueuedPresetPlacement = Main.netMode == 1 || CreateWandSelectionState.UseStaggeredPlacement;
-			if (shouldUseQueuedPresetPlacement)
+			if (ShouldUseQueuedBlueprintPlacement())
 			{
 				if (CreateWandStaggeredPlacementQueue.IsBusy)
 				{
@@ -254,6 +252,14 @@ namespace CreateWandPatch.Gameplay
 			Terraria.CombatText.NewText(player.getRect(), Color.LightGreen,
 				"[魔杖] 联机逐格需在互动距离内；走近或按 [ 切「快速」不限距离。", false, false);
 		}
+
+		/// <summary>
+		/// 联机真服始终逐格；<see cref="CreateWandSelectionState.MpLocalOnlyNoNet"/> 时尊重 [ 快速/逐格 切换。
+		/// </summary>
+		private static bool ShouldUseQueuedBlueprintPlacement() =>
+			Main.netMode == 1
+				? !CreateWandSelectionState.MpLocalOnlyNoNet || CreateWandSelectionState.UseStaggeredPlacement
+				: CreateWandSelectionState.UseStaggeredPlacement;
 
 		private static bool IsWandUnlimitedPlacementReach() =>
 			!CreateWandSelectionState.UseStaggeredPlacement;

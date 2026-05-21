@@ -171,6 +171,15 @@ namespace CreateWandPatch.Content
 		/// <summary>开启后：凡条目含 <c>PreciseData</c>（cwmap、qotstruct 解析、或与 PNG 同 stem 同尺寸的 .cwmap）走 <c>PreciseCopy</c>。默认开；<c>;</c> 或面板可关。</summary>
 		public static bool EnablePreciseCwmapPlacement = true;
 
+		/// <summary>蓝图/预设铺设队列正常结束后，移除本次 <c>TryAutoGrantMaterial</c> 补进背包的铺材堆叠。</summary>
+		public static bool AutoRemoveAutoGrantedMaterialsAfterBlueprint = true;
+
+		/// <summary>
+		/// 精确蓝图收尾 <see cref="Gameplay.CreateWandPlacementService.FinalizePreciseBlueprintRegion"/> 后，
+		/// 分块 msg20 把斜砖/染色/线路同步到服端（重进游戏才不丢）。需 <c>tshock.ignore.sendtilesquare</c> 或管理员；默认关。
+		/// </summary>
+		public static bool MpSyncPreciseTilesAfterBlueprint;
+
 		public static bool UseStaggeredPlacementEffective => UseStaggeredPlacement;
 
 		public static void ToggleStaggeredPlacement()

@@ -20,6 +20,9 @@ namespace CreateWandPatch.Gameplay
 		/// <summary>主循环（墙/砖）结束后、家具阶段开始前额外等待帧数，让服端图格稳定。</summary>
 		public const int MpFurniturePhaseDelayFrames = 24;
 
+		/// <summary>主阶段结束后、手持电路/锤/漆阶段开始前空帧。</summary>
+		public const int MpHandheldExtraPhaseDelayFrames = 12;
+
 		/// <summary>家具阶段结束后、液体阶段开始前空帧（与家具延迟同量级）。</summary>
 		public const int MpLiquidPhaseDelayFrames = 8;
 
@@ -126,7 +129,15 @@ namespace CreateWandPatch.Gameplay
 			if (_job == null)
 				return;
 			if (!cancelled)
+			{
 				_job.OnComplete();
+				var p = Main.LocalPlayer;
+				if (p != null && p.active)
+					CreateWandSurvivalRemoteCompat.TryClearAutoGrantedMaterials(p);
+			}
+			else if (_job is PreciseBlueprintJob)
+				CreateWandPlacementService.EndPreciseBlueprintPlacement();
+
 			_job = null;
 			_slowMpStaggerFramesUntilNext = 0;
 		}
@@ -141,7 +152,7 @@ namespace CreateWandPatch.Gameplay
 			void OnComplete();
 		}
 
-		/// <summary>精确瓦片 1:1：本地 CopyFrom；联机逐格按瓦片 type/wall/style 手持发包 + 家具阶段。</summary>
+		/// <summary>精确瓦片：主阶段物块链 → 手持电路/锤/漆 → 家具 → 桶倒液体。</summary>
 		private sealed class PreciseBlueprintJob : IStaggerJob
 		{
 			private readonly int _whoAmI;
@@ -150,6 +161,7 @@ namespace CreateWandPatch.Gameplay
 			private readonly int _oy;
 			private readonly int _w;
 			private readonly int[] _mainCells;
+			private readonly int[] _handheldExtraCells;
 			private readonly int[] _liquidCells;
 			private readonly int[] _clearCells;
 			private readonly List<CreateWandPlacementService.LegacyFurnitureJob> _furniture =
@@ -157,10 +169,13 @@ namespace CreateWandPatch.Gameplay
 			private readonly HashSet<long> _furnitureAnchors = new HashSet<long>();
 			private bool _useServerAuthoritativeActions;
 			private int _nextMain;
+			private int _nextHandheld;
 			private int _nextFurniture;
 			private int _nextLiquid;
+			private int _handheldPhaseDelay;
 			private int _furniturePhaseDelay;
 			private int _liquidPhaseDelay;
+			private bool _inHandheldPhase;
 			private bool _inFurniturePhase;
 			private bool _inLiquidPhase;
 
@@ -172,6 +187,7 @@ namespace CreateWandPatch.Gameplay
 				_oy = oy;
 				_w = data.Width;
 				CreateWandBlueprintPlacementOrder.BuildPrecisePassIndices(data, out _mainCells, out _liquidCells);
+				CreateWandPreciseHandheldExtras.BuildHandheldExtraIndices(data, out _handheldExtraCells);
 				_clearCells = CreateWandBlueprintPlacementOrder.BuildAllCellsBottomUp(_w, data.Height);
 			}
 
@@ -179,7 +195,8 @@ namespace CreateWandPatch.Gameplay
 
 			public void OnStart()
 			{
-				_useServerAuthoritativeActions = Main.netMode == 1 && !CreateWandSelectionState.MpLocalOnlyNoNet;
+				_useServerAuthoritativeActions = Main.netMode == 1;
+				CreateWandPlacementService.BeginPreciseBlueprintPlacement();
 				if (CreateWandSelectionState.ClearAreaBeforePlace && _data.Width > 0 && _data.Height > 0)
 				{
 					if (!_useServerAuthoritativeActions)
@@ -187,27 +204,49 @@ namespace CreateWandPatch.Gameplay
 				}
 			}
 
+			private bool BeginHandheldPhaseIfNeeded()
+			{
+				if (_handheldExtraCells.Length == 0)
+					return false;
+				_inHandheldPhase = true;
+				_handheldPhaseDelay = MpHandheldExtraPhaseDelayFrames;
+				return true;
+			}
+
+			private bool BeginFurniturePhaseIfNeeded()
+			{
+				if (_furniture.Count == 0)
+					return false;
+				_inFurniturePhase = true;
+				_furniturePhaseDelay = MpFurniturePhaseDelayFrames;
+				return true;
+			}
+
+			private bool BeginLiquidPhaseIfNeeded()
+			{
+				if (_liquidCells.Length == 0)
+					return false;
+				_inLiquidPhase = true;
+				_liquidPhaseDelay = MpLiquidPhaseDelayFrames;
+				return true;
+			}
+
 			public bool Step(Terraria.Player player)
 			{
-				if (!_inFurniturePhase && !_inLiquidPhase)
+				if (!_inHandheldPhase && !_inFurniturePhase && !_inLiquidPhase)
 				{
 					int[] order = CreateWandSelectionState.MpDeleteOnly ? _clearCells : _mainCells;
 					if (_nextMain >= order.Length)
 					{
-						if (_furniture.Count > 0)
-						{
-							_inFurniturePhase = true;
-							_furniturePhaseDelay = MpFurniturePhaseDelayFrames;
-						}
-						else if (_liquidCells.Length > 0)
-						{
-							_inLiquidPhase = true;
-							_liquidPhaseDelay = MpLiquidPhaseDelayFrames;
-						}
-						else
+						if (CreateWandSelectionState.MpDeleteOnly)
 							return false;
-
-						return true;
+						if (BeginHandheldPhaseIfNeeded())
+							return true;
+						if (BeginFurniturePhaseIfNeeded())
+							return true;
+						if (BeginLiquidPhaseIfNeeded())
+							return true;
+						return false;
 					}
 
 					int i = order[_nextMain++];
@@ -222,15 +261,40 @@ namespace CreateWandPatch.Gameplay
 							if (CreateWandPlacementService.TryGetPreciseServerCellOverrides(_data, _ox, _oy, _w, i,
 								    out tx, out ty, out BuildingData.TileInfo info, out int? wallOverride,
 								    out int? tileOverride, out int? styleOverride))
+							{
 								CreateWandPlacementService.TryPlaceLegacyServerCell(player, tx, ty, info,
 									CreateWandPlacementService.GetDefaultWallType(), wallOverride, tileOverride,
 									styleOverride, _furniture, _furnitureAnchors);
+							}
 						}
 						else
 							CreateWandPlacementService.ApplyPreciseCellStructure(player, _data, _ox, _oy, _w, i);
 					}
 
 					return true;
+				}
+
+				if (_inHandheldPhase && !_inFurniturePhase && !_inLiquidPhase)
+				{
+					if (_handheldPhaseDelay > 0)
+					{
+						_handheldPhaseDelay--;
+						return true;
+					}
+
+					if (_nextHandheld < _handheldExtraCells.Length)
+					{
+						int hi = _handheldExtraCells[_nextHandheld++];
+						CreateWandPreciseHandheldExtras.TryApplyHandheldExtras(player, _data, _ox, _oy, _w, hi);
+						return true;
+					}
+
+					_inHandheldPhase = false;
+					if (BeginFurniturePhaseIfNeeded())
+						return true;
+					if (BeginLiquidPhaseIfNeeded())
+						return true;
+					return false;
 				}
 
 				if (_inFurniturePhase && !_inLiquidPhase)
@@ -286,10 +350,15 @@ namespace CreateWandPatch.Gameplay
 
 			public void OnComplete()
 			{
-				if (!_useServerAuthoritativeActions || CreateWandSelectionState.MpDeleteOnly)
-					return;
-				if (_data.Width > 0 && _data.Height > 0)
-					CreateWandPlacementService.SyncTileRegionToServerIfMpClient(_ox, _oy, _data.Width, _data.Height);
+				if (_data.Width > 0 && _data.Height > 0 && !CreateWandSelectionState.MpDeleteOnly)
+				{
+					CreateWandPlacementService.SyncPreciseBlueprintToServerIfEnabled(_ox, _oy, _data.Width, _data.Height);
+					if (_useServerAuthoritativeActions &&
+					    CreateWandSelectionState.MpRegionSyncAfterStaggeredBlueprint)
+						CreateWandPlacementService.SyncTileRegionToServerIfMpClient(_ox, _oy, _data.Width, _data.Height);
+				}
+
+				CreateWandPlacementService.EndPreciseBlueprintPlacement();
 			}
 		}
 

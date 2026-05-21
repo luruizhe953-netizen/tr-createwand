@@ -39,7 +39,7 @@ namespace CreateWandPatch.Patches
 			__instance.SetNameOverride("创造魔杖");
 			__instance.ToolTip = ItemTooltip.FromHardcodedText(
 				"左键：在光标处放置 | 右键：打开模式面板（预设 / 蓝图 / 清空选项）",
-				"1/2/3：快捷预设  [：快速⇄逐格  - / +：上一张 / 下一张蓝图  ]：开/关放置前清空区域",
+				"1/2/3：快捷预设  [：快速⇄逐格  - / +：上一张 / 下一张蓝图  ]：开/关放置前清空区域；铺完自动删补料",
 				"P：发魔杖  N：联机发包模式列表  蓝图：文档\\My Games\\Terraria\\CreateWand\\*.png");
 
 			if (__instance.stack < 1 && __instance.maxStack > 0)

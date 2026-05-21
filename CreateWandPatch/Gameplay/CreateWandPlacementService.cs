@@ -52,6 +52,16 @@ namespace CreateWandPatch.Gameplay
 			return Math.Abs(ptx - x) <= TShockLikeRangeTiles && Math.Abs(pty - y) <= TShockLikeRangeTiles;
 		}
 
+		/// <summary>精确蓝图铺设期间禁止 SquareTileFrame(true)，避免相邻格重算抹掉斜砖/染色。</summary>
+		internal static bool DeferSquareTileFrameDuringPreciseBlueprint { get; private set; }
+
+		/// <summary>仅单机：主阶段整格 CopyFrom；联机（含仅本地 N）主阶段走物块手持链，电路/斜砖/液体另开阶段。</summary>
+		public static bool UsePreciseDirectTileCopy => Main.netMode != 1;
+
+		internal static void BeginPreciseBlueprintPlacement() => DeferSquareTileFrameDuringPreciseBlueprint = true;
+
+		internal static void EndPreciseBlueprintPlacement() => DeferSquareTileFrameDuringPreciseBlueprint = false;
+
 		public static bool PlaceBuildingAuthoritative(Terraria.Player player, BuildingData data, int originX, int originY,
 			BlueprintPlacementMode mode,
 			out int minX, out int minY, out int outW, out int outH)
@@ -313,7 +323,11 @@ namespace CreateWandPatch.Gameplay
 				if (info.Sort <= BuildingData.TileSort.Platform)
 				{
 					tileOverride = src.type;
-					styleOverride = info.HasPlaceStyle ? info.PlaceStyle : GetPreciseTilePlaceStyle(src);
+					// 斜砖/半砖：先铺整砖，主阶段结束后由手持锤链写 slope/frame
+					if (!CreateWandBlueprintPlacementOrder.PreciseTileHasHammerShape(src))
+						styleOverride = info.HasPlaceStyle ? info.PlaceStyle : GetPreciseTilePlaceStyle(src);
+					else
+						styleOverride = 0;
 				}
 			}
 
@@ -1058,9 +1072,116 @@ namespace CreateWandPatch.Gameplay
 			if (!IsInWorldTile(tx, ty))
 				return;
 
-			Tile dest = Main.tile[tx, ty];
-			dest.CopyFrom(src);
-			dest.liquid = 0;
+			ApplyPreciseTileFromSource(tx, ty, src, deferLiquid: true);
+		}
+
+		/// <summary>联机 msg17 铺整砖后：从蓝图还原斜砖/半砖/染色/线路（勿 SquareTileFrame 冲掉）。</summary>
+		internal static void ApplyPreciseCellVisualRestore(BuildingData data, int originX, int originY, int w, int i)
+		{
+			Tile src = data.GetPreciseTileOrNull(i);
+			if (src == null || !CreateWandBlueprintPlacementOrder.PreciseTileNeedsVisualRestore(src))
+				return;
+			int tx = originX + i % w;
+			int ty = originY + i / w;
+			if (!IsInWorldTile(tx, ty))
+				return;
+
+			// 无 active 的斜砖/半砖格须整格 CopyFrom，不能只改 header
+			if (!src.active() && CreateWandBlueprintPlacementOrder.PreciseTileHasHammerShape(src))
+			{
+				ApplyPreciseTileFromSource(tx, ty, src, deferLiquid: true);
+				return;
+			}
+
+			ApplyPreciseTileVisualState(Main.tile[tx, ty], src);
+			MaybeSquareTileFrameAfterPrecise(tx, ty, src);
+		}
+
+		private static void ApplyPreciseTileFromSource(int tx, int ty, Tile src, bool deferLiquid)
+		{
+			if (src == null || !IsInWorldTile(tx, ty))
+				return;
+			ApplyPreciseTileFullClone(Main.tile[tx, ty], src, deferLiquid);
+			MaybeSquareTileFrameAfterPrecise(tx, ty, src);
+		}
+
+		/// <summary>整格克隆（含 sTileHeader 内斜面方向/半砖/染色/线路），写入世界存档。</summary>
+		private static void ApplyPreciseTileFullClone(Tile dest, Tile src, bool deferLiquid)
+		{
+			if (dest == null || src == null)
+				return;
+
+			dest.type = src.type;
+			dest.wall = src.wall;
+			dest.frameX = src.frameX;
+			dest.frameY = src.frameY;
+			dest.sTileHeader = src.sTileHeader;
+			dest.bTileHeader = src.bTileHeader;
+			dest.bTileHeader2 = src.bTileHeader2;
+			dest.bTileHeader3 = src.bTileHeader3;
+			if (deferLiquid)
+				dest.liquid = 0;
+			else
+			{
+				dest.liquid = src.liquid;
+				dest.liquidType(src.liquidType());
+			}
+		}
+
+		/// <summary>主/液体阶段结束后：按蓝图整区重写，修复相邻格 SquareTileFrame 冲掉的左斜砖等。</summary>
+		internal static void FinalizePreciseBlueprintRegion(BuildingData data, int originX, int originY)
+		{
+			if (data == null || !data.HasAnyPreciseCellToPlace())
+				return;
+
+			int w = data.Width;
+			int h = data.Height;
+			CreateWandBlueprintPlacementOrder.BuildPrecisePassIndices(data, out int[] mainCells, out int[] liquidCells);
+
+			for (int m = 0; m < mainCells.Length; m++)
+			{
+				int i = mainCells[m];
+				Tile src = data.GetPreciseTileOrNull(i);
+				if (src == null)
+					continue;
+				int tx = originX + i % w;
+				int ty = originY + i / w;
+				if (!IsInWorldTile(tx, ty))
+					continue;
+				ApplyPreciseTileFullClone(Main.tile[tx, ty], src, deferLiquid: true);
+			}
+
+			for (int l = 0; l < liquidCells.Length; l++)
+			{
+				int i = liquidCells[l];
+				Tile src = data.GetPreciseTileOrNull(i);
+				if (src == null || src.liquid == 0)
+					continue;
+				int tx = originX + i % w;
+				int ty = originY + i / w;
+				if (!IsInWorldTile(tx, ty))
+					continue;
+				Main.tile[tx, ty].liquid = src.liquid;
+				Main.tile[tx, ty].liquidType(src.liquidType());
+			}
+		}
+
+		/// <summary>联机收尾：将本机已克隆的精确区域同步到服端（需权限，默认关）。</summary>
+		internal static void SyncPreciseBlueprintToServerIfEnabled(int originX, int originY, int width, int height)
+		{
+			if (!CreateWandSelectionState.MpSyncPreciseTilesAfterBlueprint)
+				return;
+			SyncTileRegionToServerIfMpClient(originX, originY, width, height, force: true);
+		}
+
+		private static void ApplyPreciseTileVisualState(Tile dest, Tile src) => ApplyPreciseTileFullClone(dest, src, deferLiquid: true);
+
+		/// <summary>SquareTileFrame(true) 会重算相邻融合并抹掉斜砖/半砖/涂料。</summary>
+		private static void MaybeSquareTileFrameAfterPrecise(int tx, int ty, Tile src)
+		{
+			if (DeferSquareTileFrameDuringPreciseBlueprint || src == null ||
+			    CreateWandBlueprintPlacementOrder.PreciseTileNeedsVisualRestore(src))
+				return;
 			WorldGen.SquareTileFrame(tx, ty, true);
 		}
 
@@ -1076,17 +1197,17 @@ namespace CreateWandPatch.Gameplay
 			if (!IsInWorldTile(tx, ty))
 				return;
 
-			Tile dest = Main.tile[tx, ty];
-			if (!dest.active() && dest.wall == 0)
-			{
-				dest.CopyFrom(src);
-			}
+			if (Main.netMode == 1)
+				CreateWandPreciseHandheldExtras.TryApplyLiquidViaBucket(player, tx, ty, src);
 			else
 			{
-				dest.liquid = src.liquid;
+				Tile dest = Main.tile[tx, ty];
+				if (!dest.active() && dest.wall == 0)
+					dest.CopyFrom(src);
+				else
+					dest.liquid = src.liquid;
+				MaybeSquareTileFrameAfterPrecise(tx, ty, src);
 			}
-
-			WorldGen.SquareTileFrame(tx, ty, true);
 		}
 
 		internal static void ApplyPreciseCell(Terraria.Player player, BuildingData data, int originX, int originY, int w, int i)
@@ -1133,6 +1254,17 @@ namespace CreateWandPatch.Gameplay
 				furnitureLater, furnitureAnchors);
 		}
 
+		private static void ApplyPreciseHandheldExtrasPass(Terraria.Player player, BuildingData data, int originX,
+			int originY)
+		{
+			if (player == null || data == null)
+				return;
+			CreateWandPreciseHandheldExtras.BuildHandheldExtraIndices(data, out int[] indices);
+			int w = data.Width;
+			for (int h = 0; h < indices.Length; h++)
+				CreateWandPreciseHandheldExtras.TryApplyHandheldExtras(player, data, originX, originY, w, indices[h]);
+		}
+
 		private static bool PlacePreciseCopyViaServerActions(Terraria.Player player, BuildingData data, int originX, int originY,
 			out int minX, out int minY, out int outW, out int outH)
 		{
@@ -1144,45 +1276,56 @@ namespace CreateWandPatch.Gameplay
 
 			int w = data.Width;
 			int h = data.Height;
-			if (CreateWandSelectionState.ClearAreaBeforePlace && w > 0 && h > 0)
-				ClearTilesAndWallsInRect(originX, originY, w, h);
-
-			minX = int.MaxValue;
-			minY = int.MaxValue;
-			int maxX = int.MinValue;
-			int maxY = int.MinValue;
-			var furnitureLater = new List<LegacyFurnitureJob>();
-			var furnitureAnchors = new HashSet<long>();
-			CreateWandBlueprintPlacementOrder.BuildPrecisePassIndices(data, out int[] mainCells, out int[] liquidCells);
-
-			for (int m = 0; m < mainCells.Length; m++)
+			BeginPreciseBlueprintPlacement();
+			try
 			{
-				int i = mainCells[m];
-				IncludePreciseCellInBounds(originX, originY, w, i, ref minX, ref minY, ref maxX, ref maxY);
-				TryPlacePreciseCellViaServer(player, data, originX, originY, w, i, furnitureLater, furnitureAnchors);
+				if (CreateWandSelectionState.ClearAreaBeforePlace && w > 0 && h > 0)
+					ClearTilesAndWallsInRect(originX, originY, w, h);
+
+				minX = int.MaxValue;
+				minY = int.MaxValue;
+				int maxX = int.MinValue;
+				int maxY = int.MinValue;
+				var furnitureLater = new List<LegacyFurnitureJob>();
+				var furnitureAnchors = new HashSet<long>();
+				CreateWandBlueprintPlacementOrder.BuildPrecisePassIndices(data, out int[] mainCells, out int[] liquidCells);
+
+				for (int m = 0; m < mainCells.Length; m++)
+				{
+					int i = mainCells[m];
+					IncludePreciseCellInBounds(originX, originY, w, i, ref minX, ref minY, ref maxX, ref maxY);
+					TryPlacePreciseCellViaServer(player, data, originX, originY, w, i, furnitureLater, furnitureAnchors);
+				}
+
+				for (int j = 0; j < furnitureLater.Count; j++)
+					TryPlaceFurnitureViaServer(player, furnitureLater[j],
+						clearBeforePlace: CreateWandSelectionState.ClearAreaBeforePlace);
+
+				ApplyPreciseHandheldExtrasPass(player, data, originX, originY);
+
+				for (int l = 0; l < liquidCells.Length; l++)
+				{
+					int i = liquidCells[l];
+					IncludePreciseCellInBounds(originX, originY, w, i, ref minX, ref minY, ref maxX, ref maxY);
+					ApplyPreciseCellLiquid(player, data, originX, originY, w, i);
+				}
+
+				if (minX == int.MaxValue)
+				{
+					outW = 0;
+					outH = 0;
+					return false;
+				}
+
+				outW = maxX - minX + 1;
+				outH = maxY - minY + 1;
+				SyncPreciseBlueprintToServerIfEnabled(originX, originY, data.Width, data.Height);
+				return true;
 			}
-
-			for (int j = 0; j < furnitureLater.Count; j++)
-				TryPlaceFurnitureViaServer(player, furnitureLater[j],
-					clearBeforePlace: CreateWandSelectionState.ClearAreaBeforePlace);
-
-			for (int l = 0; l < liquidCells.Length; l++)
+			finally
 			{
-				int i = liquidCells[l];
-				IncludePreciseCellInBounds(originX, originY, w, i, ref minX, ref minY, ref maxX, ref maxY);
-				ApplyPreciseCellLiquid(player, data, originX, originY, w, i);
+				EndPreciseBlueprintPlacement();
 			}
-
-			if (minX == int.MaxValue)
-			{
-				outW = 0;
-				outH = 0;
-				return false;
-			}
-
-			outW = maxX - minX + 1;
-			outH = maxY - minY + 1;
-			return true;
 		}
 
 		private static bool PlacePreciseCopy(Terraria.Player player, BuildingData data, int originX, int originY,
@@ -1196,39 +1339,49 @@ namespace CreateWandPatch.Gameplay
 
 			int w = data.Width;
 			int h = data.Height;
-			if (CreateWandSelectionState.ClearAreaBeforePlace && w > 0 && h > 0)
-				ClearTilesAndWallsInRect(originX, originY, w, h);
-
-			minX = int.MaxValue;
-			minY = int.MaxValue;
-			int maxX = int.MinValue;
-			int maxY = int.MinValue;
-			CreateWandBlueprintPlacementOrder.BuildPrecisePassIndices(data, out int[] mainCells, out int[] liquidCells);
-
-			for (int m = 0; m < mainCells.Length; m++)
+			BeginPreciseBlueprintPlacement();
+			try
 			{
-				int i = mainCells[m];
-				IncludePreciseCellInBounds(originX, originY, w, i, ref minX, ref minY, ref maxX, ref maxY);
-				ApplyPreciseCellStructure(player, data, originX, originY, w, i);
-			}
+				if (CreateWandSelectionState.ClearAreaBeforePlace && w > 0 && h > 0)
+					ClearTilesAndWallsInRect(originX, originY, w, h);
 
-			for (int l = 0; l < liquidCells.Length; l++)
+				minX = int.MaxValue;
+				minY = int.MaxValue;
+				int maxX = int.MinValue;
+				int maxY = int.MinValue;
+				CreateWandBlueprintPlacementOrder.BuildPrecisePassIndices(data, out int[] mainCells, out int[] liquidCells);
+
+				for (int m = 0; m < mainCells.Length; m++)
+				{
+					int i = mainCells[m];
+					IncludePreciseCellInBounds(originX, originY, w, i, ref minX, ref minY, ref maxX, ref maxY);
+					ApplyPreciseCellStructure(player, data, originX, originY, w, i);
+				}
+
+				ApplyPreciseHandheldExtrasPass(player, data, originX, originY);
+
+				for (int l = 0; l < liquidCells.Length; l++)
+				{
+					int i = liquidCells[l];
+					IncludePreciseCellInBounds(originX, originY, w, i, ref minX, ref minY, ref maxX, ref maxY);
+					ApplyPreciseCellLiquid(player, data, originX, originY, w, i);
+				}
+
+				if (minX == int.MaxValue)
+				{
+					outW = 0;
+					outH = 0;
+					return false;
+				}
+
+				outW = maxX - minX + 1;
+				outH = maxY - minY + 1;
+				return true;
+			}
+			finally
 			{
-				int i = liquidCells[l];
-				IncludePreciseCellInBounds(originX, originY, w, i, ref minX, ref minY, ref maxX, ref maxY);
-				ApplyPreciseCellLiquid(player, data, originX, originY, w, i);
+				EndPreciseBlueprintPlacement();
 			}
-
-			if (minX == int.MaxValue)
-			{
-				outW = 0;
-				outH = 0;
-				return false;
-			}
-
-			outW = maxX - minX + 1;
-			outH = maxY - minY + 1;
-			return true;
 		}
 
 		private static bool PlaceLegacySortMap(Terraria.Player player, BuildingData data, int originX, int originY,
@@ -1321,10 +1474,11 @@ namespace CreateWandPatch.Gameplay
 		}
 
 		/// <summary>联机客户端：分块 <c>NetMessage.SendTileSquare</c> (20) 同步 <see cref="Main.tile"/> 矩形。</summary>
-		public static void SyncTileRegionToServerIfMpClient(int minX, int minY, int width, int height)
+		public static void SyncTileRegionToServerIfMpClient(int minX, int minY, int width, int height, bool force = false)
 		{
-			if (Main.netMode != 1 || width <= 0 || height <= 0 ||
-			    !CreateWandSelectionState.MpRegionSyncAfterStaggeredBlueprint)
+			if (Main.netMode != 1 || width <= 0 || height <= 0)
+				return;
+			if (!force && !CreateWandSelectionState.MpRegionSyncAfterStaggeredBlueprint)
 				return;
 
 			int startX = Math.Max(1, minX);

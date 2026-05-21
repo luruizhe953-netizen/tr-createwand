@@ -69,6 +69,97 @@ namespace CreateWandPatch.Gameplay
 			return -1;
 		}
 
+		private static readonly System.Collections.Generic.HashSet<int> AutoGrantedInventorySlots =
+			new System.Collections.Generic.HashSet<int>();
+
+		/// <summary>联机生存：背包无该物品时自动补一份（线材/锤/桶等手持链用）。</summary>
+		internal static void TryEnsureMaterialForMp(Player player, int itemTypeId)
+		{
+			if (!ShouldAttempt || player == null || itemTypeId <= 0)
+				return;
+			if (FindFirstInventorySlotWithItem(player, itemTypeId) >= 0)
+				return;
+			TryAutoGrantMaterial(player, itemTypeId, out _);
+		}
+
+		/// <summary>
+		/// 电路/锤/漆/桶：真联机走换持+sync5；仅本地 N 或单机直接执行 <paramref name="action"/>。
+		/// </summary>
+		internal static bool TryExecuteHandheldTool(Terraria.Player player, int placeX, int placeY, int itemTypeId,
+			Func<bool> action)
+		{
+			if (player == null || !player.active || action == null)
+				return false;
+
+			if (Main.netMode == 1 && !CreateWandSelectionState.MpLocalOnlyNoNet)
+				return TryExecuteWhileHoldingPlaceMaterial(player, placeX, placeY, itemTypeId, 1, action);
+
+			return action();
+		}
+
+		/// <summary>背包满时：先清本次自动补料槽，再丢弃堆叠≥999 的铺材以腾格。</summary>
+		private static bool TryMakeRoomForAutoGrant(Player player)
+		{
+			if (player == null)
+				return false;
+
+			if (AutoGrantedInventorySlots.Count > 0)
+			{
+				var slots = new int[AutoGrantedInventorySlots.Count];
+				AutoGrantedInventorySlots.CopyTo(slots);
+				for (int i = 0; i < slots.Length; i++)
+				{
+					int slot = slots[i];
+					if (slot < 0 || slot >= player.inventory.Length)
+						continue;
+					player.inventory[slot].TurnToAir(false);
+					if (Main.netMode == 1)
+						SyncInventorySlotToServer(player, slot);
+				}
+
+				AutoGrantedInventorySlots.Clear();
+				if (FindFirstEmptyInventorySlot(player) >= 0)
+					return true;
+			}
+
+			for (int slot = 0; slot < player.inventory.Length && slot < MaxInventorySearchSlots; slot++)
+			{
+				Item it = player.inventory[slot];
+				if (it == null || it.IsAir || it.stack < 999)
+					continue;
+				if (it.createTile < 0 && it.createWall <= 0 && !it.PaintOrCoating && it.type != ItemID.Wire)
+					continue;
+
+				CreateWandMpDebugLog.Write("survival MP discard fullStack item=" + it.type + " stack=" + it.stack +
+				                           " slot=" + slot + " reason=inventoryFull");
+				it.TurnToAir(false);
+				if (Main.netMode == 1)
+					SyncInventorySlotToServer(player, slot);
+				if (FindFirstEmptyInventorySlot(player) >= 0)
+					return true;
+			}
+
+			return FindFirstEmptyInventorySlot(player) >= 0;
+		}
+
+		/// <summary>涂刷工具 1 个；染料桶（PaintOrCoating）999；铺砖等默认 999。</summary>
+		private static int ResolveAutoGrantStack(Item granted)
+		{
+			int maxStack = granted.maxStack > 0 ? granted.maxStack : 1;
+			if (granted.PaintOrCoating)
+				return Math.Min(maxStack, 999);
+			if (IsSingleStackHandheldTool(granted.type))
+				return 1;
+			return Math.Min(maxStack, 999);
+		}
+
+		private static bool IsSingleStackHandheldTool(int itemTypeId) =>
+			itemTypeId == ItemID.Paintbrush || itemTypeId == ItemID.PaintRoller
+			|| itemTypeId == ItemID.SpectrePaintbrush || itemTypeId == ItemID.SpectrePaintRoller
+			|| itemTypeId == ItemID.IronHammer || itemTypeId == ItemID.Wrench
+			|| itemTypeId == ItemID.BlueWrench || itemTypeId == ItemID.GreenWrench
+			|| itemTypeId == ItemID.YellowWrench || itemTypeId == ItemID.ActuationRod;
+
 		private static bool TryAutoGrantMaterial(Player player, int itemTypeId, out int grantedSlot)
 		{
 			grantedSlot = -1;
@@ -76,6 +167,10 @@ namespace CreateWandPatch.Gameplay
 				return false;
 
 			int emptySlot = FindFirstEmptyInventorySlot(player);
+			if (emptySlot < 0 && !TryMakeRoomForAutoGrant(player))
+				return false;
+			if (emptySlot < 0)
+				emptySlot = FindFirstEmptyInventorySlot(player);
 			if (emptySlot < 0)
 				return false;
 
@@ -84,15 +179,35 @@ namespace CreateWandPatch.Gameplay
 			if (granted.IsAir)
 				return false;
 
-			int maxStack = granted.maxStack > 0 ? granted.maxStack : 1;
-			granted.stack = Math.Min(maxStack, 999);
+			granted.stack = ResolveAutoGrantStack(granted);
 			player.inventory[emptySlot] = granted;
 			grantedSlot = emptySlot;
+			AutoGrantedInventorySlots.Add(emptySlot);
 			SyncInventorySlotToServer(player, emptySlot);
 
 			CreateWandMpDebugLog.Write("survival MP autoGrant item=" + itemTypeId +
 			                           " stack=" + granted.stack + " toInvSlot=" + emptySlot);
 			return true;
+		}
+
+		/// <summary>蓝图/预设队列正常结束后，清掉本次自动补进背包的铺材（默认开）。</summary>
+		internal static void TryClearAutoGrantedMaterials(Player player)
+		{
+			if (!CreateWandSelectionState.AutoRemoveAutoGrantedMaterialsAfterBlueprint || player == null ||
+			    AutoGrantedInventorySlots.Count == 0)
+				return;
+
+			foreach (int slot in AutoGrantedInventorySlots)
+			{
+				if (slot < 0 || slot >= player.inventory.Length)
+					continue;
+				player.inventory[slot].TurnToAir(false);
+				if (Main.netMode == 1)
+					SyncInventorySlotToServer(player, slot);
+			}
+
+			AutoGrantedInventorySlots.Clear();
+			CreateWandMpDebugLog.Write("survival MP cleared autoGranted material slots after blueprint");
 		}
 
 		private static void MaybeHintMissingMaterial(Player player, int templateItemId)
@@ -200,6 +315,12 @@ namespace CreateWandPatch.Gameplay
 
 			player.inventory[invSlot].TurnToAir(false);
 			SyncInventorySlotsAfterSwap(player, sel, invSlot);
+		}
+
+		internal static void SyncInventorySlotToServerIfMp(Player player, int inventoryIndex)
+		{
+			if (Main.netMode == 1 && !CreateWandSelectionState.MpLocalOnlyNoNet)
+				SyncInventorySlotToServer(player, inventoryIndex);
 		}
 
 		private static void SyncInventorySlotToServer(Player player, int inventoryIndex)

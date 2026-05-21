@@ -10,14 +10,57 @@ namespace CreateWandPatch.Gameplay
 	{
 		public static bool PreciseTileHasLiquid(Tile tile) => tile != null && tile.liquid > 0;
 
+		/// <summary>锤子斜面/半砖（sTileHeader 内 slope、halfBrick）。</summary>
+		public static bool PreciseTileHasHammerShape(Tile tile) =>
+			tile != null && (tile.slope() != 0 || tile.halfBrick());
+
 		public static bool PreciseTileNeedsMainPass(Tile tile)
 		{
 			if (tile == null)
 				return false;
 			if (tile.wall != 0)
 				return true;
-			return tile.active();
+			if (tile.active())
+				return true;
+			return PreciseTileHasHammerShape(tile) || PreciseTileHasWiringOrPaint(tile);
 		}
+
+		/// <summary>无墙无 active 物块时仍可能有电路/染色/制动器（须单独写入）。</summary>
+		public static bool PreciseTileHasWiringOrPaint(Tile tile)
+		{
+			if (tile == null)
+				return false;
+			return tile.wire() || tile.wire2() || tile.wire3() || tile.wire4() || tile.inActive() || tile.actuator()
+			       || tile.color() > 0 || tile.wallColor() > 0;
+		}
+
+		/// <summary>须走手持链（电路/锤子/喷漆），在主阶段砖墙铺完后处理。</summary>
+		public static bool PreciseTileNeedsHandheldExtras(Tile tile) =>
+			tile != null && (PreciseTileHasHammerShape(tile) || PreciseTileHasWiringOrPaint(tile));
+
+		/// <summary>手持 extras 与主阶段相同：自下而上，避免敲斜面时相邻格未就绪。</summary>
+		public static void BuildHandheldExtraIndicesBottomUp(BuildingData data, out int[] indices)
+		{
+			int w = data.Width;
+			int h = data.Height;
+			var list = new List<int>();
+			for (int rowFromBottom = 0; rowFromBottom < h; rowFromBottom++)
+			{
+				int y = h - 1 - rowFromBottom;
+				for (int x = 0; x < w; x++)
+				{
+					int i = x + y * w;
+					Tile src = data.GetPreciseTileOrNull(i);
+					if (src != null && PreciseTileNeedsHandheldExtras(src))
+						list.Add(i);
+				}
+			}
+
+			indices = list.ToArray();
+		}
+
+		/// <summary>铺砖后须从蓝图还原、且不宜调用 SquareTileFrame(true) 以免冲掉锤子/染色。</summary>
+		public static bool PreciseTileNeedsVisualRestore(Tile tile) => PreciseTileNeedsHandheldExtras(tile);
 
 		public static bool LegacyTileNeedsMainPass(BuildingData.TileInfo info) =>
 			info.HasWall || info.Sort != BuildingData.TileSort.None;
