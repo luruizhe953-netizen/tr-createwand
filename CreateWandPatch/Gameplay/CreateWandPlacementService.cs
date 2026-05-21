@@ -1046,19 +1046,66 @@ namespace CreateWandPatch.Gameplay
 			}
 		}
 
-		internal static void ApplyPreciseCell(Terraria.Player player, BuildingData data, int originX, int originY, int w, int i)
+		/// <summary>精确格：墙/物块/家具数据；液体留到 <see cref="ApplyPreciseCellLiquid"/>。</summary>
+		internal static void ApplyPreciseCellStructure(Terraria.Player player, BuildingData data, int originX, int originY,
+			int w, int i)
 		{
 			Tile src = data.GetPreciseTileOrNull(i);
 			if (src == null)
 				return;
 			int tx = originX + i % w;
 			int ty = originY + i / w;
-			if (tx < 0 || ty < 0 || tx >= Main.maxTilesX || ty >= Main.maxTilesY)
+			if (!IsInWorldTile(tx, ty))
 				return;
 
 			Tile dest = Main.tile[tx, ty];
 			dest.CopyFrom(src);
+			dest.liquid = 0;
 			WorldGen.SquareTileFrame(tx, ty, true);
+		}
+
+		/// <summary>液体阶段：仅写入液体（自下而上队列的最后一轮）。</summary>
+		internal static void ApplyPreciseCellLiquid(Terraria.Player player, BuildingData data, int originX, int originY,
+			int w, int i)
+		{
+			Tile src = data.GetPreciseTileOrNull(i);
+			if (src == null || src.liquid == 0)
+				return;
+			int tx = originX + i % w;
+			int ty = originY + i / w;
+			if (!IsInWorldTile(tx, ty))
+				return;
+
+			Tile dest = Main.tile[tx, ty];
+			if (!dest.active() && dest.wall == 0)
+			{
+				dest.CopyFrom(src);
+			}
+			else
+			{
+				dest.liquid = src.liquid;
+			}
+
+			WorldGen.SquareTileFrame(tx, ty, true);
+		}
+
+		internal static void ApplyPreciseCell(Terraria.Player player, BuildingData data, int originX, int originY, int w, int i)
+		{
+			ApplyPreciseCellStructure(player, data, originX, originY, w, i);
+			ApplyPreciseCellLiquid(player, data, originX, originY, w, i);
+		}
+
+		private static void IncludePreciseCellInBounds(int originX, int originY, int w, int i, ref int minX, ref int minY,
+			ref int maxX, ref int maxY)
+		{
+			int tx = originX + i % w;
+			int ty = originY + i / w;
+			if (!IsInWorldTile(tx, ty))
+				return;
+			minX = Math.Min(minX, tx);
+			minY = Math.Min(minY, ty);
+			maxX = Math.Max(maxX, tx);
+			maxY = Math.Max(maxY, ty);
 		}
 
 		private static int GetPreciseTilePlaceStyle(Tile src)
@@ -1106,27 +1153,25 @@ namespace CreateWandPatch.Gameplay
 			int maxY = int.MinValue;
 			var furnitureLater = new List<LegacyFurnitureJob>();
 			var furnitureAnchors = new HashSet<long>();
+			CreateWandBlueprintPlacementOrder.BuildPrecisePassIndices(data, out int[] mainCells, out int[] liquidCells);
 
-			for (int i = 0; i < w * h; i++)
+			for (int m = 0; m < mainCells.Length; m++)
 			{
-				Tile src = data.GetPreciseTileOrNull(i);
-				if (src == null)
-					continue;
-				int tx = originX + i % w;
-				int ty = originY + i / w;
-				if (!IsInWorldTile(tx, ty))
-					continue;
-
-				minX = Math.Min(minX, tx);
-				minY = Math.Min(minY, ty);
-				maxX = Math.Max(maxX, tx);
-				maxY = Math.Max(maxY, ty);
+				int i = mainCells[m];
+				IncludePreciseCellInBounds(originX, originY, w, i, ref minX, ref minY, ref maxX, ref maxY);
 				TryPlacePreciseCellViaServer(player, data, originX, originY, w, i, furnitureLater, furnitureAnchors);
 			}
 
 			for (int j = 0; j < furnitureLater.Count; j++)
 				TryPlaceFurnitureViaServer(player, furnitureLater[j],
 					clearBeforePlace: CreateWandSelectionState.ClearAreaBeforePlace);
+
+			for (int l = 0; l < liquidCells.Length; l++)
+			{
+				int i = liquidCells[l];
+				IncludePreciseCellInBounds(originX, originY, w, i, ref minX, ref minY, ref maxX, ref maxY);
+				ApplyPreciseCellLiquid(player, data, originX, originY, w, i);
+			}
 
 			if (minX == int.MaxValue)
 			{
@@ -1158,23 +1203,20 @@ namespace CreateWandPatch.Gameplay
 			minY = int.MaxValue;
 			int maxX = int.MinValue;
 			int maxY = int.MinValue;
+			CreateWandBlueprintPlacementOrder.BuildPrecisePassIndices(data, out int[] mainCells, out int[] liquidCells);
 
-			for (int i = 0; i < w * h; i++)
+			for (int m = 0; m < mainCells.Length; m++)
 			{
-				Tile src = data.GetPreciseTileOrNull(i);
-				if (src == null)
-					continue;
-				int tx = originX + i % w;
-				int ty = originY + i / w;
-				if (tx < 0 || ty < 0 || tx >= Main.maxTilesX || ty >= Main.maxTilesY)
-					continue;
+				int i = mainCells[m];
+				IncludePreciseCellInBounds(originX, originY, w, i, ref minX, ref minY, ref maxX, ref maxY);
+				ApplyPreciseCellStructure(player, data, originX, originY, w, i);
+			}
 
-				minX = Math.Min(minX, tx);
-				minY = Math.Min(minY, ty);
-				maxX = Math.Max(maxX, tx);
-				maxY = Math.Max(maxY, ty);
-
-				ApplyPreciseCell(player, data, originX, originY, w, i);
+			for (int l = 0; l < liquidCells.Length; l++)
+			{
+				int i = liquidCells[l];
+				IncludePreciseCellInBounds(originX, originY, w, i, ref minX, ref minY, ref maxX, ref maxY);
+				ApplyPreciseCellLiquid(player, data, originX, originY, w, i);
 			}
 
 			if (minX == int.MaxValue)
@@ -1202,8 +1244,10 @@ namespace CreateWandPatch.Gameplay
 			Item wallTemplate = CreateTemplateItem(30);
 			var furnitureLater = new List<LegacyFurnitureJob>();
 			var furnitureAnchors = new HashSet<long>();
-			for (int i = 0; i < data.TileInfos.Count; i++)
+			CreateWandBlueprintPlacementOrder.BuildLegacyPassIndices(data, out int[] mainCells);
+			for (int m = 0; m < mainCells.Length; m++)
 			{
+				int i = mainCells[m];
 				int tx = originX + i % data.Width;
 				int ty = originY + i / data.Width;
 				if (tx >= 0 && ty >= 0 && tx < Main.maxTilesX && ty < Main.maxTilesY)
@@ -1241,10 +1285,11 @@ namespace CreateWandPatch.Gameplay
 			int wallType = GetDefaultWallType();
 			var furnitureLater = new List<LegacyFurnitureJob>();
 			var furnitureAnchors = new HashSet<long>();
-			int total = data.TileInfos.Count;
+			CreateWandBlueprintPlacementOrder.BuildLegacyPassIndices(data, out int[] mainCells);
 
-			for (int i = 0; i < total; i++)
+			for (int m = 0; m < mainCells.Length; m++)
 			{
+				int i = mainCells[m];
 				int tx = originX + i % data.Width;
 				int ty = originY + i / data.Width;
 				if (!IsInWorldTile(tx, ty))
