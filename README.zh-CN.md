@@ -66,6 +66,10 @@ dotnet build "TerrariaPatchLoader\TerrariaLoader\TerrariaLoader.csproj" -c Relea
 - 预设与 PNG 蓝图：`Documents\My Games\Terraria\CreateWand\*.png`
 - **色图（Legacy）：** 按颜色分类铺砖（模板物块，联机已验证交换+发包链）
 - **精确蓝图（cwmap / qot）：** 墙/物块/平台 **1:1** 类型与样式；联机与非精确路径共用 `TryPlaceLegacyServerCell`（背包材料交换 + 装备 sync5）
+- **涂刷与线路：** 漆刷/滚刷 + 四色线/制动器，手持工具链分阶段执行
+- **可调速逐格：** `<` / `>` 调节格间延迟（0~30 帧），进度条可视化
+- **重复放置：** `O` 设定次数（最多 10×），自动重新入队防服务器回滚
+- **快速清区：** `]` 三档切换（关/逐格/一键），`K` 一键全清含线路
 - 联机逐格队列，降低 TShock 铺砖阈值触发（蛛网化）
 - 调试日志：`CreateWandPatch-mp.log`（可选：F9 / Shift+F9 / Ctrl+F9）
 
@@ -76,11 +80,15 @@ dotnet build "TerrariaPatchLoader\TerrariaLoader\TerrariaLoader.csproj" -c Relea
 | **`P`** | **否**（进世界即可） | 发放创造魔杖 **6147**；背包已有则提示位置；有短冷却防连按 |
 | `\` / `OemPipe` | 是 | 放置总开关 |
 | `N` | 是 | 联机放置模式（手持·失败同逐格） |
-| `[` | 是 | 快速 / 逐格 |
+| `[` | 是 | 快速 / 逐格切换（显示当前速度） |
+| `]` | 是 | 放置前清空模式：关 → 逐格 → 一键（含电线） |
+| `;` | 是 | 切换精确放置（**默认开**；cwmap / qotstruct / PNG+同名 cwmap） |
+| `<` / `>` | 是 | 逐格速度 +/-（0~30 帧格间延迟，速度条可视化） |
+| `O` | 是 | 重复放置次数：1×→2×→3×→5×→10×（防服务器回滚） |
+| `K` | 是 | 一键全清蓝图区域（物块+墙+四色线+制动器），仅「仅删除」模式生效 |
 | `1` / `2` / `3` | 是 | 三种预设 |
 | `-` / `+` | 是 | 上一张 / 下一张 PNG 蓝图 |
 | `B` | 是 | 框选导出 PNG 蓝图 |
-| `;` | 是 | 切换精确放置（**默认开**；cwmap / qotstruct / PNG+同名 cwmap） |
 | `F9` | 否（联机） | 开关网络调试日志 |
 | `Shift+F9` | 否（联机） | 仅图格相关 msg 过滤 |
 | `Ctrl+F9` | 否（联机） | 开关铺砖「闪回」检测日志 |
@@ -91,7 +99,8 @@ dotnet build "TerrariaPatchLoader\TerrariaLoader\TerrariaLoader.csproj" -c Relea
 
 ## 联机（TShock）注意
 
-- 实验性功能；服务端需适当调高 `TilePlaceThreshold` / `TileKillThreshold`，避免铺砖过快被 Disable（蛛网）。
+- 实验性功能；服务端需适当调高 `TilePlaceThreshold` / `TileKillThreshold` / `TilePaintThreshold`，避免铺砖/涂漆过快被 Disable（蛛网）。
+- **涂刷**：guest 组需有 `tshock.world.paint` 权限，否则正常漆刷也无法使用。
 - 默认不在蓝图结束后发送大块 `SendTileSquare`（msg20），无权限时易被拒或断线。
 - 家具放置依赖手持材料 + msg79/msg34 等，详见仓库内文档。
 

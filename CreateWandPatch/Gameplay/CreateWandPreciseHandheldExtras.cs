@@ -10,11 +10,14 @@ namespace CreateWandPatch.Gameplay
 	/// </summary>
 	internal static class CreateWandPreciseHandheldExtras
 	{
-		/// <summary>简体中文「漆刷」：给物块/家具涂色（<see cref="ItemID.Paintbrush"/>）。</summary>
+		/// <summary>物块/家具：国服「漆刷」<see cref="ItemID.Paintbrush"/>（1071）。</summary>
 		private const int TilePaintToolItemId = ItemID.Paintbrush;
 
-		/// <summary>简体中文「涂漆滚刷」：给墙体涂色（<see cref="ItemID.PaintRoller"/>）。</summary>
+		/// <summary>墙体：国服「涂漆滚刷」<see cref="ItemID.PaintRoller"/>（1072）。</summary>
 		private const int WallPaintToolItemId = ItemID.PaintRoller;
+
+		/// <summary>弹药栏第一格（原版 <see cref="Player.FindPaintOrCoating"/> 优先检索 54–57）。</summary>
+		private const int FirstAmmoInventorySlot = 54;
 
 		internal static void BuildHandheldExtraIndices(BuildingData data, out int[] indices) =>
 			CreateWandBlueprintPlacementOrder.BuildHandheldExtraIndicesBottomUp(data, out indices);
@@ -185,51 +188,48 @@ namespace CreateWandPatch.Gameplay
 
 			bool ok = true;
 			if (tileColor > 0)
-				ok &= TryPaintTileHeld(player, tx, ty, tileColor);
+				ok &= TryPaintSurfaceHeld(player, tx, ty, tileColor, forWall: false);
 			if (wallColor > 0)
-				ok &= TryPaintWallHeld(player, tx, ty, wallColor);
+				ok &= TryPaintSurfaceHeld(player, tx, ty, wallColor, forWall: true);
 			return ok;
 		}
 
-		private static bool TryPaintTileHeld(Terraria.Player player, int x, int y, byte color)
+		/// <param name="forWall">false=物块（漆刷+paintTile）；true=墙（涂漆滚刷+paintWall）。</param>
+		private static bool TryPaintSurfaceHeld(Terraria.Player player, int x, int y, byte color, bool forWall)
 		{
 			Tile t = Main.tile[x, y];
-			if (t == null || !t.active() || t.color() == color)
-				return true;
-
-			if (!TryEnsurePaintKitInInventory(player, color, forWall: false))
+			if (t == null)
 				return false;
 
-			return CreateWandSurvivalRemoteCompat.TryExecuteHandheldTool(player, x, y, TilePaintToolItemId, () =>
+			if (forWall)
+			{
+				if (t.wall == 0 || t.wallColor() == color)
+					return true;
+			}
+			else
+			{
+				if (!t.active() || t.color() == color)
+					return true;
+			}
+
+			if (!TryEnsurePaintKitInInventory(player, color, forWall))
+				return false;
+
+			int toolId = forWall ? WallPaintToolItemId : TilePaintToolItemId;
+			return CreateWandSurvivalRemoteCompat.TryExecuteHandheldTool(player, x, y, toolId, () =>
 			{
 				bool broadcast = Main.netMode == 1 && !CreateWandSelectionState.MpLocalOnlyNoNet;
-				if (!WorldGen.paintTile(x, y, color, broadcast, false))
+				bool painted = forWall
+					? WorldGen.paintWall(x, y, color, broadcast, false)
+					: WorldGen.paintTile(x, y, color, broadcast, false);
+				if (!painted)
 					return false;
 				TryConsumePaintByColor(player, color);
 				return true;
 			});
 		}
 
-		private static bool TryPaintWallHeld(Terraria.Player player, int x, int y, byte color)
-		{
-			Tile t = Main.tile[x, y];
-			if (t == null || t.wall == 0 || t.wallColor() == color)
-				return true;
-
-			if (!TryEnsurePaintKitInInventory(player, color, forWall: true))
-				return false;
-
-			return CreateWandSurvivalRemoteCompat.TryExecuteHandheldTool(player, x, y, WallPaintToolItemId, () =>
-			{
-				bool broadcast = Main.netMode == 1 && !CreateWandSelectionState.MpLocalOnlyNoNet;
-				if (!WorldGen.paintWall(x, y, color, broadcast, false))
-					return false;
-				TryConsumePaintByColor(player, color);
-				return true;
-			});
-		}
-
-		/// <summary>涂刷前：物块用漆刷、墙用涂漆滚刷（各 1）+ 对应色染料桶（消耗物，自动补 999）。</summary>
+		/// <summary>涂刷前：漆刷/滚刷 + 对应染料桶，并把该色油漆放到弹药栏第一格（54）。</summary>
 		private static bool TryEnsurePaintKitInInventory(Terraria.Player player, byte color, bool forWall)
 		{
 			if (player == null || color == 0)
@@ -238,15 +238,86 @@ namespace CreateWandPatch.Gameplay
 			int toolId = forWall ? WallPaintToolItemId : TilePaintToolItemId;
 			CreateWandSurvivalRemoteCompat.TryEnsureMaterialForMp(player, toolId);
 
-			if (FindInventorySlotWithPaintColor(player, color) >= 0)
-				return FindFirstInventorySlotWithItemType(player, toolId) >= 0;
+			if (FindInventorySlotWithPaintColor(player, color) < 0)
+			{
+				if (!TryResolvePaintItemId(color, out int paintItemId))
+					return false;
+				CreateWandSurvivalRemoteCompat.TryEnsureMaterialForMp(player, paintItemId);
+			}
 
-			if (!TryResolvePaintItemId(color, out int paintItemId))
+			if (!TryAssignPaintToFirstAmmoSlot(player, color))
 				return false;
 
-			CreateWandSurvivalRemoteCompat.TryEnsureMaterialForMp(player, paintItemId);
-			return FindInventorySlotWithPaintColor(player, color) >= 0
-			       && FindFirstInventorySlotWithItemType(player, toolId) >= 0;
+			return FindFirstInventorySlotWithItemType(player, toolId) >= 0;
+		}
+
+		/// <summary>将目标色染料桶移到 <see cref="FirstAmmoInventorySlot"/>，供手持漆刷/滚刷消耗。</summary>
+		private static bool TryAssignPaintToFirstAmmoSlot(Terraria.Player player, byte color)
+		{
+			int sourceSlot = FindBestPaintSourceSlot(player, color);
+			if (sourceSlot < 0)
+				return false;
+
+			Item dest = player.inventory[FirstAmmoInventorySlot];
+			if (sourceSlot == FirstAmmoInventorySlot &&
+			    dest != null && !dest.IsAir && dest.stack > 0 && dest.paint == color)
+				return true;
+
+			Item src = player.inventory[sourceSlot];
+			if (dest == null || dest.IsAir)
+			{
+				player.inventory[FirstAmmoInventorySlot] = src.Clone();
+				src.TurnToAir(false);
+			}
+			else
+			{
+				Item swap = dest.Clone();
+				player.inventory[FirstAmmoInventorySlot] = src.Clone();
+				player.inventory[sourceSlot] = swap;
+			}
+
+			CreateWandSurvivalRemoteCompat.SyncInventorySlotToServerIfMp(player, FirstAmmoInventorySlot);
+			if (sourceSlot != FirstAmmoInventorySlot)
+				CreateWandSurvivalRemoteCompat.SyncInventorySlotToServerIfMp(player, sourceSlot);
+
+			CreateWandMpDebugLog.Write("diag paint ammoSlot=" + FirstAmmoInventorySlot + " color=" + color +
+			                           " fromSlot=" + sourceSlot + " type=" +
+			                           (player.inventory[FirstAmmoInventorySlot]?.type ?? -1));
+			return player.inventory[FirstAmmoInventorySlot] != null &&
+			       !player.inventory[FirstAmmoInventorySlot].IsAir &&
+			       player.inventory[FirstAmmoInventorySlot].paint == color;
+		}
+
+		/// <summary>优先非弹药栏的匹配色油漆；已在 54 且颜色正确则直接返回 54。</summary>
+		private static int FindBestPaintSourceSlot(Terraria.Player player, byte color)
+		{
+			Item ammo = player.inventory[FirstAmmoInventorySlot];
+			if (ammo != null && !ammo.IsAir && ammo.stack > 0 && ammo.paint == color)
+				return FirstAmmoInventorySlot;
+
+			int best = -1;
+			int bestStack = 0;
+			for (int i = 0; i < player.inventory.Length && i < 58; i++)
+			{
+				if (i == FirstAmmoInventorySlot)
+					continue;
+				Item it = player.inventory[i];
+				if (it == null || it.IsAir || it.stack <= 0 || it.paint != color)
+					continue;
+				if (it.stack > bestStack)
+				{
+					bestStack = it.stack;
+					best = i;
+				}
+			}
+
+			if (best >= 0)
+				return best;
+
+			if (ammo != null && !ammo.IsAir && ammo.stack > 0 && ammo.paint == color)
+				return FirstAmmoInventorySlot;
+
+			return -1;
 		}
 
 		private static int FindFirstInventorySlotWithItemType(Terraria.Player player, int itemTypeId)
@@ -275,10 +346,14 @@ namespace CreateWandPatch.Gameplay
 
 		private static void TryConsumePaintByColor(Terraria.Player player, byte color)
 		{
-			int slot = FindInventorySlotWithPaintColor(player, color);
+			int slot = FirstAmmoInventorySlot;
+			Item it = player.inventory[slot];
+			if (it == null || it.IsAir || it.stack <= 0 || it.paint != color)
+				slot = FindInventorySlotWithPaintColor(player, color);
 			if (slot < 0)
 				return;
-			Item it = player.inventory[slot];
+
+			it = player.inventory[slot];
 			it.stack--;
 			if (it.stack <= 0)
 				it.TurnToAir(false);

@@ -527,21 +527,6 @@ namespace CreateWandPatch.Gameplay
 				SendTileManipulation(player, TileManipulationAction.KillWall, x, y, 0, 0);
 			}
 			ClearWiresAtCell(player, x, y);
-
-			// 本地回退：防止服端已删但客户端未刷新
-			Tile localT = Main.tile[x, y];
-			if (localT != null)
-			{
-				if (localT.active())
-					localT.ClearTileAndPaint();
-				if (localT.wall != 0)
-					localT.wall = 0;
-				localT.wire(false);
-				localT.wire2(false);
-				localT.wire3(false);
-				localT.wire4(false);
-				localT.actuator(false);
-			}
 		}
 
 		/// <summary>联机：清格与放置分两包（仍由 <paramref name="clearBeforePlace"/> 控制是否先发 Kill）；若只改「放置」策略勿动 <see cref="TryClearCellViaServer"/>。</summary>
@@ -1760,11 +1745,9 @@ namespace CreateWandPatch.Gameplay
 		private static bool HasAnyWire(Tile t) =>
 			t != null && (t.wire() || t.wire2() || t.wire3() || t.wire4() || t.actuator());
 
-
-
 		/// <summary>
-		/// 钢丝钳模拟：直接 WorldGen.KillWire（不换持任何物品）+ msg17，再本地回退。
-		/// 联机非仅本地时先发 KillWire 方法再补 msg17；仅本地只调 WorldGen。
+		/// 清除单格所有线路：本地设 false + msg17（KillWire 6/11/13/17、KillActuator 9）。
+		/// 仅在 Main.netMode == 1 且非仅本地时发包。
 		/// </summary>
 		private static void ClearWiresAtCell(Terraria.Player player, int x, int y)
 		{
@@ -1774,49 +1757,35 @@ namespace CreateWandPatch.Gameplay
 
 			bool isMp = Main.netMode == 1 && !CreateWandSelectionState.MpLocalOnlyNoNet;
 
-			// 红线 → WorldGen.KillWire + msg17 action=6
 			if (t.wire())
 			{
-				WorldGen.KillWire(x, y);
+				t.wire(false);
 				if (isMp)
 					NetMessage.SendData((int)MessageID.TileManipulation, -1, -1, null, 6, x, y);
-				t.wire(false);
 			}
-
-			// 蓝线 → WorldGen.KillWire2 + msg17 action=11
 			if (t.wire2())
 			{
-				WorldGen.KillWire2(x, y);
+				t.wire2(false);
 				if (isMp)
 					NetMessage.SendData((int)MessageID.TileManipulation, -1, -1, null, 11, x, y);
-				t.wire2(false);
 			}
-
-			// 绿线 → WorldGen.KillWire3 + msg17 action=13
 			if (t.wire3())
 			{
-				WorldGen.KillWire3(x, y);
+				t.wire3(false);
 				if (isMp)
 					NetMessage.SendData((int)MessageID.TileManipulation, -1, -1, null, 13, x, y);
-				t.wire3(false);
 			}
-
-			// 黄线 → WorldGen.KillWire4 + msg17 action=17
 			if (t.wire4())
 			{
-				WorldGen.KillWire4(x, y);
+				t.wire4(false);
 				if (isMp)
 					NetMessage.SendData((int)MessageID.TileManipulation, -1, -1, null, 17, x, y);
-				t.wire4(false);
 			}
-
-			// 制动器 → WorldGen.KillActuator + msg17 action=9
 			if (t.actuator())
 			{
-				WorldGen.KillActuator(x, y);
+				t.actuator(false);
 				if (isMp)
 					NetMessage.SendData((int)MessageID.TileManipulation, -1, -1, null, 9, x, y);
-				t.actuator(false);
 			}
 		}
 
@@ -1866,29 +1835,6 @@ namespace CreateWandPatch.Gameplay
 				}
 
 				cleared++;
-			}
-
-
-			// 本地回退第二遍：确保客户端图格已刷新，防止服端删了本地没删
-			for (int j = 0; j < h; j++)
-			for (int i = 0; i < w; i++)
-			{
-				int x = originX + i;
-				int y = originY + j;
-				if (!IsInWorldTile(x, y))
-					continue;
-				Tile t2 = Main.tile[x, y];
-				if (t2 == null)
-					continue;
-				if (t2.active())
-					t2.ClearTileAndPaint();
-				if (t2.wall != 0)
-					t2.wall = 0;
-				t2.wire(false);
-				t2.wire2(false);
-				t2.wire3(false);
-				t2.wire4(false);
-				t2.actuator(false);
 			}
 
 			CreateWandMpDebugLog.Write("diag fastClear area=(" + originX + "," + originY + ") " + w + "x" + h +

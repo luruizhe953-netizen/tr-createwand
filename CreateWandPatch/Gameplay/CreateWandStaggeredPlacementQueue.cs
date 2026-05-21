@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using CreateWandPatch.Content;
 using Terraria;
@@ -12,10 +13,16 @@ namespace CreateWandPatch.Gameplay
 	{
 		public const int CellsPerUpdate = 1;
 
+		/// <summary>逐格速度下限（最快）：格间额外空帧最小值。</summary>
+		public const int MinHandheldExtraFramesBetweenCells = 0;
+
+		/// <summary>逐格速度上限（最慢）：格间额外空帧最大值。</summary>
+		public const int MaxHandheldExtraFramesBetweenCells = 30;
+
 		/// <summary>
-		/// 联机「手持·失败同逐格」：格与格之间额外空帧，贴近手点节奏（0=每帧一格）。
+		/// 联机「手持·失败同逐格」：格与格之间额外空帧（0=每帧一格，最大 30）。热键 <c>,</c> / <c>.</c> 调速。
 		/// </summary>
-		public const int VanillaHandheldExtraFramesBetweenCells = 3;
+		public static int VanillaHandheldExtraFramesBetweenCells = 3;
 
 		/// <summary>主循环（墙/砖）结束后、家具阶段开始前额外等待帧数，让服端图格稳定。</summary>
 		public const int MpFurniturePhaseDelayFrames = 24;
@@ -30,6 +37,12 @@ namespace CreateWandPatch.Gameplay
 
 		private static IStaggerJob _job;
 		private static int _slowMpStaggerFramesUntilNext;
+		private static int _placementRepeatRemaining;
+		private static int _lastPlacementWhoAmI;
+		private static BuildingData _lastPlacementData;
+		private static int _lastPlacementOx;
+		private static int _lastPlacementOy;
+		private static BlueprintPlacementMode _lastPlacementMode;
 
 		public static bool TryEnqueueBlueprint(Terraria.Player player, BuildingData data, int originX, int originY,
 			BlueprintPlacementMode mode)
@@ -41,6 +54,12 @@ namespace CreateWandPatch.Gameplay
 			else
 				_job = new PreciseBlueprintJob(player.whoAmI, data, originX, originY);
 			_slowMpStaggerFramesUntilNext = 0;
+			_placementRepeatRemaining = CreateWandSelectionState.PlacementRepeatCount - 1;
+			_lastPlacementWhoAmI = player.whoAmI;
+			_lastPlacementData = data;
+			_lastPlacementOx = originX;
+			_lastPlacementOy = originY;
+			_lastPlacementMode = mode;
 			_job.OnStart();
 			return true;
 		}
@@ -71,14 +90,35 @@ namespace CreateWandPatch.Gameplay
 			return false;
 		}
 
+		/// <summary>调整逐格速度：正数=减速(多空帧)，负数=加速。clamp [Min, Max]。</summary>
+		public static int AdjustHandheldSpeed(int delta)
+		{
+			VanillaHandheldExtraFramesBetweenCells = Math.Min(MaxHandheldExtraFramesBetweenCells,
+				Math.Max(MinHandheldExtraFramesBetweenCells, VanillaHandheldExtraFramesBetweenCells + delta));
+			return VanillaHandheldExtraFramesBetweenCells;
+		}
+
 		/// <summary>供 UI/热键提示：当前逐格铺设的大致速率描述。</summary>
 		public static string GetStaggeredSpeedHintForCombatText()
 		{
 			if (Main.netMode == 1 && CreateWandSelectionState.MpVanillaHandheldThenExplicitMsg17 &&
 			    !CreateWandSelectionState.MpLocalOnlyNoNet && !CreateWandSelectionState.MpDeleteOnly)
-				return "手持·失败同逐格：每格间隔 " + VanillaHandheldExtraFramesBetweenCells + " 帧（约 1 格/" +
-				       (1 + VanillaHandheldExtraFramesBetweenCells) + " 帧）";
+				return "手持逐格：格间 " + VanillaHandheldExtraFramesBetweenCells + " 帧（约 " +
+				       (60.0 / (1 + VanillaHandheldExtraFramesBetweenCells)).ToString("F1") + " 格/秒）";
 			return "每帧最多 " + CellsPerUpdate + " 格";
+		}
+
+		/// <summary>速度档位短标签，供热键提示。</summary>
+		public static string GetSpeedBarForCombatText()
+		{
+			int speed = VanillaHandheldExtraFramesBetweenCells;
+			int total = MaxHandheldExtraFramesBetweenCells;
+			int barLen = 12;
+			int filled = total > 0 ? (int)((1.0 - (double)speed / total) * barLen) : barLen;
+			if (filled < 0) filled = 0;
+			if (filled > barLen) filled = barLen;
+			string bar = new string('|', filled) + new string('.', barLen - filled);
+			return "[" + bar + "] " + speed + "帧/格";
 		}
 
 		public static void ProcessFrame()
@@ -140,6 +180,30 @@ namespace CreateWandPatch.Gameplay
 
 			_job = null;
 			_slowMpStaggerFramesUntilNext = 0;
+
+			// 重复放置：队列正常结束后若还有剩余次数，自动重新入队
+			if (!cancelled && _placementRepeatRemaining > 0 && _lastPlacementData != null)
+			{
+				_placementRepeatRemaining--;
+				var rp = Main.LocalPlayer;
+				if (rp != null && rp.active && rp.whoAmI == _lastPlacementWhoAmI)
+				{
+					_job = _lastPlacementMode == BlueprintPlacementMode.PreciseCopy
+						? (IStaggerJob)new PreciseBlueprintJob(rp.whoAmI, _lastPlacementData, _lastPlacementOx, _lastPlacementOy)
+						: new LegacyBlueprintJob(rp.whoAmI, _lastPlacementData, _lastPlacementOx, _lastPlacementOy);
+					_job.OnStart();
+					CreateWandMpDebugLog.Write("diag repeatPlacement remaining=" + _placementRepeatRemaining + " total=" + CreateWandSelectionState.PlacementRepeatCount);
+				}
+				else
+				{
+					_placementRepeatRemaining = 0;
+				}
+			}
+			else if (!cancelled)
+			{
+				_lastPlacementData = null;
+				_placementRepeatRemaining = 0;
+			}
 		}
 
 		private interface IStaggerJob
@@ -199,7 +263,11 @@ namespace CreateWandPatch.Gameplay
 				CreateWandPlacementService.BeginPreciseBlueprintPlacement();
 				if (CreateWandSelectionState.ClearAreaBeforePlace && _data.Width > 0 && _data.Height > 0)
 				{
-					if (!_useServerAuthoritativeActions)
+					if (CreateWandSelectionState.UseFastClearBeforePlace)
+					{
+						CreateWandPlacementService.ClearEntireBlueprintFast(Main.LocalPlayer, _data, _ox, _oy);
+					}
+					else if (!_useServerAuthoritativeActions)
 						CreateWandPlacementService.ClearTilesAndWallsInRect(_ox, _oy, _data.Width, _data.Height);
 				}
 			}
@@ -398,7 +466,11 @@ namespace CreateWandPatch.Gameplay
 				_useServerAuthoritativeActions = Main.netMode == 1 && !CreateWandSelectionState.MpLocalOnlyNoNet;
 				if (CreateWandSelectionState.ClearAreaBeforePlace && _data.Width > 0 && _data.Height > 0)
 				{
-					if (!_useServerAuthoritativeActions)
+					if (CreateWandSelectionState.UseFastClearBeforePlace)
+					{
+						CreateWandPlacementService.ClearEntireBlueprintFast(Main.LocalPlayer, _data, _ox, _oy);
+					}
+					else if (!_useServerAuthoritativeActions)
 						CreateWandPlacementService.ClearTilesAndWallsInRect(_ox, _oy, _data.Width, _data.Height);
 				}
 			}

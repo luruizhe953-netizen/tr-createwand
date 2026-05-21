@@ -16,6 +16,14 @@ namespace CreateWandPatch.Content
 		Dirt2x2
 	}
 
+		/// <summary>放置前清空区域模式。</summary>
+		public enum ClearAreaMode : byte
+		{
+			None,
+			Staggered,
+			Fast
+		}
+
 	/// <summary>
 	/// 联机客户端放置策略（热键 N 列表，共 3 种）。Kill 一般为原版 <c>MessageID.TileManipulation</c> 拆格。
 	/// </summary>
@@ -46,7 +54,49 @@ namespace CreateWandPatch.Content
 		public static int SelectedDatamapIndex;
 
 		/// <summary>左键放置前是否先清空该矩形内的物块与墙（默认开）。按 ] 或面板内按钮切换。</summary>
-		public static bool ClearAreaBeforePlace = true;
+		public static ClearAreaMode ClearAreaBeforePlaceMode = ClearAreaMode.Fast;
+
+		/// <summary>向后兼容：None 以外视为清空开启。</summary>
+		public static bool ClearAreaBeforePlace => ClearAreaBeforePlaceMode != ClearAreaMode.None;
+
+		/// <summary>清空模式为 Fast 时使用一键全清。</summary>
+		public static bool UseFastClearBeforePlace => ClearAreaBeforePlaceMode == ClearAreaMode.Fast;
+
+		/// <summary>] 键循环：None → Staggered → Fast → None。</summary>
+		public static void NextClearAreaMode()
+		{
+			ClearAreaBeforePlaceMode = ClearAreaBeforePlaceMode switch
+			{
+				ClearAreaMode.None => ClearAreaMode.Staggered,
+				ClearAreaMode.Staggered => ClearAreaMode.Fast,
+				ClearAreaMode.Fast => ClearAreaMode.None,
+				_ => ClearAreaMode.Fast
+			};
+		}
+
+		public static string GetClearAreaModeLabel() => ClearAreaBeforePlaceMode switch
+		{
+			ClearAreaMode.None => "关",
+			ClearAreaMode.Staggered => "逐格",
+			ClearAreaMode.Fast => "一键",
+			_ => "?"
+		};
+
+		/// <summary>重复放置次数（防服务器回滚）。默认 1。按 O 循环：1→2→3→5→10→1。</summary>
+		public static int PlacementRepeatCount = 1;
+
+		/// <summary>R 键循环重复次数。</summary>
+		public static void NextPlacementRepeatCount()
+		{
+			PlacementRepeatCount = PlacementRepeatCount switch
+			{
+				1 => 2,
+				2 => 3,
+				3 => 5,
+				5 => 10,
+				_ => 1
+			};
+		}
 
 		/// <summary>创造魔杖放置总开关（默认开）。关闭后仅保留预览，不执行实际放置。</summary>
 		public static bool PlacementEnabled = true;

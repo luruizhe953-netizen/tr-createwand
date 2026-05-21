@@ -27,6 +27,10 @@ Optional (not copied by default): `ImproveGame/` (QoT mod), `TerrariaServer/` (s
 - Presets and PNG blueprint library under `My Games\Terraria\CreateWand\`
 - **Legacy (color map):** sorted placement template
 - **Precise (`cwmap` / qotstruct):** 1:1 tile / wall / platform style on multiplayer via shared placement chain (inventory swap + equipment sync)
+- **Paint & wiring:** paintbrush/paint roller + wire/actuator placement via handheld tool chain; supports all 4 wire colors
+- **Adjustable stagger speed:** `<` / `>` hotkeys with visual speed bar (0–30 frames between cells)
+- **Repeat placement:** `O` cycles repeat count (up to 10×); blueprint re‑queues automatically after completion to counter server rollback
+- **Fast area clear:** `]` selects off / staggered / instant clear; `K` triggers one‑click full‑area delete with wire removal in DeleteOnly mode
 - Staggered placement queue for TShock rate limits
 - Debug log: `CreateWandPatch-mp.log` (optional hotkeys F9 / Shift+F9 / Ctrl+F9)
 
@@ -48,12 +52,17 @@ Optional (not copied by default): `ImproveGame/` (QoT mod), `TerrariaServer/` (s
 |-----|---------------------|--------|
 | **`P`** | **No** (in-world) | Grant Create Wand (6147); cooldown if spammed |
 | `\` / `OemPipe` | Yes | Placement master toggle |
-| `N` | Yes | MP placement mode |
-| `1`–`3` | Yes | Presets |
+| `[` | Yes | Fast / staggered placement toggle (shows current speed) |
+| `]` | Yes | Pre‑placement clear mode: Off → Staggered → Fast (includes wires) |
+| `;` | Yes | Toggle precise blueprint placement (1:1 cwmap/qotstruct) |
+| `N` | Yes | MP placement mode (LocalOnly / Handheld+msg17 / DeleteOnly) |
+| `<` / `>` | Yes | Adjust staggered speed (frames between cells, 0–30) |
+| `O` | Yes | Repeat placement count: 1× → 2× → 3× → 5× → 10× (anti‑rollback) |
+| `K` | Yes | Instant full‑area delete + wire clear (only in DeleteOnly mode) |
+| `1`–`3` | Yes | Built‑in presets |
 | `-` / `+` | Yes | Previous / next PNG blueprint |
-| `B` | Yes | Box-select export PNG |
-| `;` | Yes | Toggle precise blueprint placement (**on by default**) |
-| `F9` / Shift+F9 / Ctrl+F9 | No (MP) | Net / tile-filter / rollback trace logs |
+| `B` | Yes | Box‑select export region to PNG |
+| `F9` / Shift+F9 / Ctrl+F9 | **No** | Net / tile‑filter / rollback trace logs |
 
 ## Legal
 

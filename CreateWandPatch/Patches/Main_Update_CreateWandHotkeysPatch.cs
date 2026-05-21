@@ -103,6 +103,35 @@ namespace CreateWandPatch.Patches
 				if (p.inventory[p.selectedItem].type != CreateWandIds.ItemType)
 					return;
 
+				// 逐格速度热键（< 和 >，不需 FancyUI 也可调）
+				if (KeyPressed(kb, prevKb, Keys.OemComma))
+				{
+					int newSpeed = CreateWandStaggeredPlacementQueue.AdjustHandheldSpeed(+1);
+					Terraria.CombatText.NewText(p.getRect(), new Microsoft.Xna.Framework.Color(200, 220, 255),
+						"[魔杖] 逐格减速 → " + CreateWandStaggeredPlacementQueue.GetSpeedBarForCombatText(), false, false);
+				}
+				else if (KeyPressed(kb, prevKb, Keys.OemPeriod))
+				{
+					int newSpeed = CreateWandStaggeredPlacementQueue.AdjustHandheldSpeed(-1);
+					Terraria.CombatText.NewText(p.getRect(), new Microsoft.Xna.Framework.Color(200, 255, 200),
+						"[魔杖] 逐格加速 → " + CreateWandStaggeredPlacementQueue.GetSpeedBarForCombatText(), false, false);
+				}
+				else if (KeyPressed(kb, prevKb, Keys.K))
+				{
+					if (!CreateWandSelectionState.MpDeleteOnly)
+					{
+						Terraria.CombatText.NewText(p.getRect(), Microsoft.Xna.Framework.Color.OrangeRed,
+							"[魔杖] 一键全清仅在「仅删除」模式可用。请先按 N 切换到仅删除", false, false);
+					}
+					else if (TryPackFastClear(p, out BuildingData data, out int ox, out int oy))
+					{
+						CreateWandPlacementService.ClearEntireBlueprintFast(p, data, ox, oy);
+						Terraria.CombatText.NewText(p.getRect(), Microsoft.Xna.Framework.Color.Orange,
+							"[魔杖] 一键全清完成（" + data.Width + "x" + data.Height + "，含线路）", false, false);
+						SoundEngine.PlaySound(12, -1, -1, 1, 0.8f, 0f);
+					}
+				}
+
 				// Fancy UI 打开时避免与界面/其它 IngameFancy 状态抢键（创造魔杖原版面板亦会走此分支）
 				if (Main.inFancyUI)
 					return;
@@ -126,11 +155,17 @@ namespace CreateWandPatch.Patches
 				}
 				else if (KeyPressed(kb, prevKb, Keys.OemCloseBrackets))
 				{
-					CreateWandSelectionState.ClearAreaBeforePlace = !CreateWandSelectionState.ClearAreaBeforePlace;
+					CreateWandSelectionState.NextClearAreaMode();
+					string clearLabel = CreateWandSelectionState.GetClearAreaModeLabel();
 					Terraria.CombatText.NewText(p.getRect(), Microsoft.Xna.Framework.Color.Orange,
-						CreateWandSelectionState.ClearAreaBeforePlace ? "[魔杖] 放置前清空区域：开" : "[魔杖] 放置前清空区域：关",
-						false, false);
+						"[魔杖] 放置前清空：" + clearLabel + "（] 切换：关/逐格/一键）", false, false);
 					CreateWandWorldPreview.InvalidateCache();
+				}
+				else if (KeyPressed(kb, prevKb, Keys.O))
+				{
+					CreateWandSelectionState.NextPlacementRepeatCount();
+					Terraria.CombatText.NewText(p.getRect(), new Microsoft.Xna.Framework.Color(255, 200, 100),
+						"[魔杖] 重复放置 " + CreateWandSelectionState.PlacementRepeatCount + " 次（防回滚 · 按 O 切换）", false, false);
 				}
 				else if (KeyPressed(kb, prevKb, Keys.OemOpenBrackets))
 				{
@@ -354,5 +389,41 @@ namespace CreateWandPatch.Patches
 			}
 		}
 
+			/// <summary>为 K 键一键全清打包当前蓝图选区，返回数据和原点。</summary>
+			private static bool TryPackFastClear(Terraria.Player p, out BuildingData data, out int ox, out int oy)
+			{
+				data = null;
+				ox = 0;
+				oy = 0;
+
+				if (p == null || !p.active)
+					return false;
+
+				if (CreateWandSelectionState.SelectedKind != BlueprintKind.DataMap)
+					return false;
+
+				CreateWandPngLibrary.EnsureReload();
+				if (CreateWandPngLibrary.Entries.Count == 0 ||
+				    CreateWandSelectionState.SelectedDatamapIndex < 0 ||
+				    CreateWandSelectionState.SelectedDatamapIndex >= CreateWandPngLibrary.Entries.Count)
+					return false;
+
+				CreateWandBlueprintEntry entry = CreateWandPngLibrary.Entries[CreateWandSelectionState.SelectedDatamapIndex];
+				BuildingData bd = entry.Data;
+				Point mouseTile = Main.MouseWorld.ToTileCoordinates();
+				ox = mouseTile.X - bd.Width / 2;
+				oy = mouseTile.Y - bd.Height / 2;
+
+				if (ox < 0 || oy < 0 || ox + bd.Width > Main.maxTilesX || oy + bd.Height > Main.maxTilesY)
+				{
+					Terraria.CombatText.NewText(p.getRect(), Microsoft.Xna.Framework.Color.OrangeRed,
+						"[魔杖] 蓝图超出世界边界", false, false);
+					return false;
+				}
+
+				data = bd;
+				return true;
+			}
+
+		}
 	}
-}

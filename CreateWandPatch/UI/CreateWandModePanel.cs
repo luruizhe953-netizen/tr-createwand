@@ -101,7 +101,7 @@ namespace CreateWandPatch.UI
 			};
 			_clearToggle.OnLeftClick += delegate
 			{
-				CreateWandSelectionState.ClearAreaBeforePlace = !CreateWandSelectionState.ClearAreaBeforePlace;
+				CreateWandSelectionState.NextClearAreaMode();
 				_clearToggle.SetText(ClearToggleText(), 0.78f, true);
 				CreateWandWorldPreview.InvalidateCache();
 				SoundEngine.PlaySound(12, -1, -1, 1, 1f, 0f);
@@ -283,9 +283,7 @@ namespace CreateWandPatch.UI
 		}
 
 		private static string ClearToggleText() =>
-			CreateWandSelectionState.ClearAreaBeforePlace
-				? "放置前清空区域：开（点击关闭）"
-				: "放置前清空区域：关（点击开启）";
+			"放置前清空：" + CreateWandSelectionState.GetClearAreaModeLabel() + "（] 切换）";
 
 		private static string PaceToggleText()
 		{
