@@ -520,30 +520,30 @@ namespace CreateWandPatch.Gameplay
 				return;
 			}
 
-			// 删除链路独立：按备份版始终走显式 Kill 包，不依赖放置分支与本地状态。
-			for (int i = 0; i < repeat; i++)
-			{
-				SendTileManipulation(player, TileManipulationAction.KillTile, x, y, 0, 0);
-				SendTileManipulation(player, TileManipulationAction.KillWall, x, y, 0, 0);
-			}
-			ClearWiresAtCell(player, x, y);
+		// 删除链路独立：按备份版始终走显式 Kill 包，不依赖放置分支与本地状态。
+		for (int i = 0; i < repeat; i++)
+		{
+			SendTileManipulation(player, TileManipulationAction.KillTile, x, y, 0, 0);
+			SendTileManipulation(player, TileManipulationAction.KillWall, x, y, 0, 0);
+		}
+		ClearWiresAtCell(player, x, y);
 
-			// 本地回退：防止服端已删但客户端未刷新
-			Tile localT = Main.tile[x, y];
-			if (localT != null)
-			{
-				if (localT.active())
-					localT.ClearTileAndPaint();
-				if (localT.wall != 0)
-					localT.wall = 0;
-				localT.wire(false);
-				localT.wire2(false);
-				localT.wire3(false);
-				localT.wire4(false);
-				localT.actuator(false);
-			}
+		// 本地兜底
+		Tile localT2 = Main.tile[x, y];
+		if (localT2 != null)
+		{
+			if (localT2.active())
+				localT2.ClearTileAndPaint();
+			if (localT2.wall != 0)
+				localT2.wall = 0;
+			localT2.wire(false);
+			localT2.wire2(false);
+			localT2.wire3(false);
+			localT2.wire4(false);
+			localT2.actuator(false);
 		}
 
+		}
 		/// <summary>联机：清格与放置分两包（仍由 <paramref name="clearBeforePlace"/> 控制是否先发 Kill）；若只改「放置」策略勿动 <see cref="TryClearCellViaServer"/>。</summary>
 		public static void TryPlaceTileViaServer(Terraria.Player player, int x, int y, int tileType, int style, bool clearBeforePlace)
 		{
@@ -1808,7 +1808,12 @@ namespace CreateWandPatch.Gameplay
 			t.wire4(false);
 			t.actuator(false);
 		}
-		/// 不走逐格队列。联机仅本地则直接 ClearEverything。
+
+		/// <summary>
+
+		/// <summary>
+		/// 「仅删除」模式一键全清：联机时换持铜镐 → KillTile/KillWall → 清线 → 本地兜底。
+		/// 换持镐子是为了让 TShock Bouncer 的 selectedItem.pick>0 校验通过（魔杖 pick=0）。
 		/// </summary>
 		public static void ClearEntireBlueprintFast(Terraria.Player player, BuildingData data, int originX, int originY)
 		{
@@ -1818,69 +1823,66 @@ namespace CreateWandPatch.Gameplay
 			int w = data.Width;
 			int h = data.Height;
 			int cleared = 0;
+			bool realMp = Main.netMode == 1 && !CreateWandSelectionState.MpLocalOnlyNoNet;
 
-			for (int j = 0; j < h; j++)
-			for (int i = 0; i < w; i++)
+			if (realMp)
 			{
-				int x = originX + i;
-				int y = originY + j;
-				if (!IsInWorldTile(x, y))
-					continue;
-				Tile t = Main.tile[x, y];
-				if (t == null)
-					continue;
-
-				bool hasTile = t.active();
-				bool hasWall = t.wall != 0;
-				bool hasWire = HasAnyWire(t);
-
-				if (!hasTile && !hasWall && !hasWire)
-					continue;
-
-				if (Main.netMode == 1 && !CreateWandSelectionState.MpLocalOnlyNoNet)
+				// 换持铜镐（pick>0）一次，循环内所有 msg17 KillTile 才能过 TShock 校验
+				CreateWandSurvivalRemoteCompat.TryExecuteWhileHoldingPlaceMaterial(
+					player, originX, originY, ItemID.CopperPickaxe, 1, () =>
 				{
-					if (hasTile)
-						SendTileManipulation(player, TileManipulationAction.KillTile, x, y, 0, 0);
-					if (hasWall)
-						SendTileManipulation(player, TileManipulationAction.KillWall, x, y, 0, 0);
-					if (hasWire)
-						ClearWiresAtCell(player, x, y);
-				}
-				else
-				{
-					t.ClearEverything();
-				}
+					for (int j = 0; j < h; j++)
+					for (int i = 0; i < w; i++)
+					{
+						int x = originX + i;
+						int y = originY + j;
+						if (!IsInWorldTile(x, y)) continue;
+						Tile t = Main.tile[x, y];
+						if (t == null) continue;
 
-				cleared++;
+						bool hasTile = t.active();
+						bool hasWall = t.wall != 0;
+						bool hasWire = HasAnyWire(t);
+						if (!hasTile && !hasWall && !hasWire) continue;
+
+						if (hasTile)
+							SendTileManipulation(player, TileManipulationAction.KillTile, x, y, 0, 0);
+						if (hasWall)
+							SendTileManipulation(player, TileManipulationAction.KillWall, x, y, 0, 0);
+						if (hasWire)
+							ClearWiresAtCell(player, x, y);
+
+						// 本地兜底
+						if (t.active()) t.ClearTileAndPaint();
+						if (t.wall != 0) t.wall = 0;
+						t.wire(false); t.wire2(false); t.wire3(false); t.wire4(false); t.actuator(false);
+
+						cleared++;
+					}
+					return true;
+				});
 			}
-
-
-			// 本地回退第二遍：确保客户端图格已刷新，防止服端删了本地没删
-			for (int j = 0; j < h; j++)
-			for (int i = 0; i < w; i++)
+			else
 			{
-				int x = originX + i;
-				int y = originY + j;
-				if (!IsInWorldTile(x, y))
-					continue;
-				Tile t2 = Main.tile[x, y];
-				if (t2 == null)
-					continue;
-				if (t2.active())
-					t2.ClearTileAndPaint();
-				if (t2.wall != 0)
-					t2.wall = 0;
-				t2.wire(false);
-				t2.wire2(false);
-				t2.wire3(false);
-				t2.wire4(false);
-				t2.actuator(false);
+				for (int j = 0; j < h; j++)
+				for (int i = 0; i < w; i++)
+				{
+					int x = originX + i;
+					int y = originY + j;
+					if (!IsInWorldTile(x, y)) continue;
+					Tile t = Main.tile[x, y];
+					if (t == null) continue;
+					if (t.active() || t.wall != 0 || HasAnyWire(t))
+					{
+						t.ClearEverything();
+						cleared++;
+					}
+				}
 			}
 
 			CreateWandMpDebugLog.Write("diag fastClear area=(" + originX + "," + originY + ") " + w + "x" + h +
 			                           " cellsCleared=" + cleared + " netMode=" + Main.netMode +
-			                           " localOnly=" + CreateWandSelectionState.MpLocalOnlyNoNet);
+			                           " realMp=" + realMp);
 		}
-
 	}
 }

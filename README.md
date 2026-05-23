@@ -77,6 +77,44 @@ This project was developed **entirely through AI-assisted “vibe coding”** (h
 - Multiplayer / TShock paths are experimental.
 - Back up your characters and worlds before use. **Do not use if you do not accept these risks.**
 
+## Android Port (Experimental)
+
+An Android port of CreateWandPatch is under development in the private workspace.
+
+### Current Status
+- C# source code: **100% ported** (47 files, 0 build errors)
+- Smali/APK patching: **complete** (Pairip bypass, lifecycle hooks)
+- Native injector: **compiled** (ARM64 + x86_64, JNI + DT_NEEDED)
+- On-device test: **pending** (requires real ARM device)
+
+### Architecture
+
+The Android version of Terraria is a Unity IL2CPP build. The Windows mod uses Harmony to patch C# at runtime; on Android, IL2CPP compiles C# to native ARM code, so the injection path is:
+
+```
+APK Install
+  → Application.<clinit> loads libcwpatch.so (smali injection)
+  → libmain.so loads libcwpatch.so as dependency (DT_NEEDED)
+  → JNI_OnLoad registers native methods
+  → onResume callback calls CWPatch.init()
+  → init() resolves IL2CPP function pointers (dlopen + dlsym)
+  → Calls il2cpp_domain_get → il2cpp_thread_attach → il2cpp_runtime_invoke
+  → Executes Bootstrap.Init() → Harmony patches go live
+```
+
+### Known Limitation
+
+x86 PC emulators (MuMu, LDPlayer, BlueStacks) use ARM→x86 binary translation (Intel Houdini / Hyper-G). These translation layers assign **per-library TLS contexts**, preventing an injected .so from calling IL2CPP functions in the game's own libraries. All three major emulators tested — same result: SIGSEGV at `il2cpp_domain_get()`.
+
+**A real ARM64 Android device is required.** On native ARM hardware, there is no translation layer, TLS is shared across all .so files, and the injection should work.
+
+### Tech Stack (Android)
+- C# `netstandard2.0` with Harmony 2.3.3
+- C + NDK for native injector (libcwpatch.so)
+- Smali patching (APKTool)
+- Il2CppDumper for API analysis
+- LIEF + Python for binary patching attempts
+
 ## Internal / dev docs
 
 Development handoff notes with server-specific details stay in the private workspace (`HANDOFF_*.md` at repo root). Do **not** commit secrets, SSH keys, or production server IPs to GitHub.

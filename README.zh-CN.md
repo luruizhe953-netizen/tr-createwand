@@ -115,6 +115,46 @@ dotnet build "TerrariaPatchLoader\TerrariaLoader\TerrariaLoader.csproj" -c Relea
 
 ---
 
+## Android 移植（实验性）
+
+CreateWandPatch 的 Android 移植正在开发中（私有工作区内）。
+
+### 当前状态
+- C# 源码：**100% 移植**（47 文件，0 编译错误）
+- Smali/APK 修补：**完成**（Pairip 绕过、生命周期钩子）
+- 原生注入器：**已编译**（ARM64 + x86_64 双架构，支持 JNI + DT_NEEDED）
+- 真机测试：**待进行**（需要 ARM 真机）
+
+### 技术路线
+
+泰拉瑞亚 Android 版是 Unity IL2CPP 编译的。Windows 版通过 Harmony 在运行时修改 C# 代码；Android 版 IL2CPP 会把 C# 编译成原生 ARM 代码，注入链路如下：
+
+```
+APK 安装
+  → Application.<clinit> 加载 libcwpatch.so（smali 注入）
+  → libmain.so 依赖加载 libcwpatch.so（DT_NEEDED）
+  → JNI_OnLoad 注册原生方法
+  → onResume 回调调用 CWPatch.init()
+  → init() 解析 IL2CPP 函数指针（dlopen + dlsym）
+  → 调用 il2cpp_domain_get → il2cpp_thread_attach → il2cpp_runtime_invoke
+  → 执行 Bootstrap.Init() → Harmony 补丁生效
+```
+
+### 已知限制
+
+x86 PC 模拟器（MuMu、雷电、蓝叠）使用 ARM→x86 二进制翻译（Intel Houdini / Hyper-G）。这些翻译层为**每个 .so 单独分配 TLS 上下文**，导致注入的 .so 无法调用游戏本体库中的 IL2CPP 函数。三个主流模拟器全部测试过——结果一致：`il2cpp_domain_get()` 处 SIGSEGV。
+
+**需要真机 ARM64 Android 设备。** 真机原生 ARM 硬件无翻译层，所有 .so 共享 TLS，注入应该正常运作。
+
+### 技术栈（Android 端）
+- C# `netstandard2.0` + Harmony 2.3.3
+- C + NDK 编写原生注入器（libcwpatch.so）
+- Smali 修补（APKTool）
+- Il2CppDumper 分析 IL2CPP API
+- LIEF + Python 做二进制补丁尝试
+
+---
+
 ## 免责声明（Vibe Coding）
 
 本仓库**全程在 AI 辅助编程（vibe coding）环境下迭代**：大量代码由人与 LLM 协作生成、修改与拼装，**未经系统化测试与安全审计**。
