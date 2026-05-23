@@ -38,6 +38,15 @@ backups/
 CreateWandPatch2/
 TilePlacementSmokeTest/
 
+# Android port: Dummy DLLs from Il2CppDumper (too large for git, regenerate locally)
+CreateWandPatch.Android/lib/*.dll
+!CreateWandPatch.Android/lib/.gitkeep
+
+# Android port: native build artifacts
+native_loader/libs/
+native_loader/obj/
+native_loader/libil2cpp/
+
 # Staging output from prepare script (optional local clone)
 repo-staging/
 

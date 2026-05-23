@@ -1,0 +1,1889 @@
+using System;
+using System.Collections.Generic;
+using CreateWandPatch.Content;
+
+using Terraria;
+using Terraria.DataStructures;
+using Terraria.GameContent;
+using Terraria.ID;
+using Terraria.ObjectData;
+
+namespace CreateWandPatch.Gameplay
+{
+	/// <summary>自反编译 CreateWandPlacement 迁移，namespace 独立以免与游戏冲突。</summary>
+	public static class CreateWandPlacementService
+	{
+		/// <summary>联机客户端：静默清图（不写 Kill 包）仅在「仅本地」模式。</summary>
+		private static bool UseMpLocalSilentClears =>
+			Main.netMode == 1 && CreateWandSelectionState.MpLocalOnlyNoNet;
+
+		private enum TileManipulationAction
+		{
+			KillTile = 0,
+			PlaceTile = 1,
+			KillWall = 2,
+			PlaceWall = 3
+		}
+
+		private const int TShockLikeRangeTiles = 32;
+
+		private static int GetMpTileOperationRepeatCount()
+		{
+			// TShock anti-cheat is sensitive to bursty tile packets; keep MP attempts single-pass.
+			if (Main.netMode == 1)
+				return 1;
+
+			if (!CreateWandTileRollbackDetector.ShouldBoostMpTileOperationRepeats)
+				return 1;
+			int n = CreateWandSelectionState.MpTileOperationRepeatCount;
+			if (n < 1)
+				n = 1;
+			if (n > 10)
+				n = 10;
+			return n;
+		}
+
+		private static bool IsWithinTShockLikeRange(Player player, int x, int y)
+		{
+			if (player == null)
+				return false;
+			int ptx = (int)(player.Center.X / 16f);
+			int pty = (int)(player.Center.Y / 16f);
+			return Math.Abs(ptx - x) <= TShockLikeRangeTiles && Math.Abs(pty - y) <= TShockLikeRangeTiles;
+		}
+
+		/// <summary>精确蓝图铺设期间禁止 SquareTileFrame(true)，避免相邻格重算抹掉斜砖/染色。</summary>
+		internal static bool DeferSquareTileFrameDuringPreciseBlueprint { get; private set; }
+
+		/// <summary>仅单机：主阶段整格 CopyFrom；联机（含仅本地 N）主阶段走物块手持链，电路/斜砖/液体另开阶段。</summary>
+		public static bool UsePreciseDirectTileCopy => Main.netMode != 1;
+
+		internal static void BeginPreciseBlueprintPlacement() => DeferSquareTileFrameDuringPreciseBlueprint = true;
+
+		internal static void EndPreciseBlueprintPlacement() => DeferSquareTileFrameDuringPreciseBlueprint = false;
+
+		public static bool PlaceBuildingAuthoritative(Terraria.Player player, BuildingData data, int originX, int originY,
+			BlueprintPlacementMode mode,
+			out int minX, out int minY, out int outW, out int outH)
+		{
+			if (mode == BlueprintPlacementMode.PreciseCopy)
+				return PlacePreciseCopy(player, data, originX, originY, out minX, out minY, out outW, out outH);
+			return PlaceLegacySortMap(player, data, originX, originY, out minX, out minY, out outW, out outH);
+		}
+
+		public static bool PlaceBuildingViaServerActions(Terraria.Player player, BuildingData data, int originX, int originY,
+			BlueprintPlacementMode mode, out int minX, out int minY, out int outW, out int outH)
+		{
+			if (Main.netMode != 1)
+				return PlaceBuildingAuthoritative(player, data, originX, originY, mode, out minX, out minY, out outW, out outH);
+
+			if (CreateWandSelectionState.MpLocalOnlyNoNet)
+				return PlaceBuildingAuthoritative(player, data, originX, originY, mode, out minX, out minY, out outW, out outH);
+
+			if (mode == BlueprintPlacementMode.PreciseCopy)
+			{
+				if (!PlacePreciseCopyViaServerActions(player, data, originX, originY, out minX, out minY, out outW, out outH))
+					return false;
+				SyncTileRegionToServerIfMpClient(minX, minY, outW, outH);
+				return true;
+			}
+
+			if (!PlaceLegacySortMapViaServerActions(player, data, originX, originY, out minX, out minY, out outW, out outH))
+				return false;
+			SyncTileRegionToServerIfMpClient(minX, minY, outW, outH);
+			return true;
+		}
+
+		public static Item CreateWallTemplateItem() => CreateTemplateItem(30);
+
+		public static int GetDefaultWallType() => CreateTemplateItem(30).createWall;
+
+		public static bool IsInWorldTile(int x, int y) =>
+			x >= 0 && y >= 0 && x < Main.maxTilesX && y < Main.maxTilesY;
+
+		public static bool TryResolveSortPlacement(BuildingData.TileSort sort, out int tileType, out int style)
+		{
+			tileType = -1;
+			style = 0;
+			if (sort == BuildingData.TileSort.None)
+				return false;
+
+			Item item = CreateTemplateItem(GetItemIdForSort(sort));
+			if (item.createTile < 0)
+				return false;
+			tileType = item.createTile;
+			style = item.placeStyle;
+			return true;
+		}
+
+		/// <summary>家具放置：精确蓝图用 <see cref="BuildingData.TileInfo.PlaceStyle"/>，色图仍用模板默认。</summary>
+		public static bool TryResolveFurniturePlacement(BuildingData.TileInfo info, out int tileType, out int style)
+		{
+			if (!TryResolveSortPlacement(info.Sort, out tileType, out style))
+				return false;
+			if (info.HasPlaceStyle)
+				style = info.PlaceStyle;
+			return true;
+		}
+
+		private static readonly Item _placeProbeItem = new Item();
+		private static readonly Dictionary<long, int> _tilePlaceItemCache = new Dictionary<long, int>();
+		private static readonly Dictionary<int, int> _wallPlaceItemCache = new Dictionary<int, int>();
+
+		private static long TileStyleCacheKey(int tileType, int style) => ((long)tileType << 32) | (uint)style;
+
+		/// <summary>联机 <c>Player.PlaceThing</c> 用：色图表 + 精准 1:1 全物品反查（createTile/placeStyle）。</summary>
+		internal static bool TryGetTemplateItemIdForPlaceThing(int tileType, int style, out int itemId)
+		{
+			itemId = 0;
+			if (tileType < 0)
+				return false;
+
+			long cacheKey = TileStyleCacheKey(tileType, style);
+			if (_tilePlaceItemCache.TryGetValue(cacheKey, out int cached))
+			{
+				if (cached > 0)
+				{
+					itemId = cached;
+					return true;
+				}
+
+				return false;
+			}
+
+			if (TryGetTemplateItemIdForPlaceThingCore(tileType, style, out itemId))
+			{
+				_tilePlaceItemCache[cacheKey] = itemId;
+				return true;
+			}
+
+			if (TryScanItemIdForTilePlacement(tileType, style, out itemId))
+			{
+				_tilePlaceItemCache[cacheKey] = itemId;
+				CreateWandMpDebugLog.Write("diag placeChain tile stage=ResolvedItemScan tileType=" + tileType + " style=" +
+				                           style + " item=" + itemId);
+				return true;
+			}
+
+			_tilePlaceItemCache[cacheKey] = 0;
+			return false;
+		}
+
+		private static bool TryGetTemplateItemIdForPlaceThingCore(int tileType, int style, out int itemId)
+		{
+			itemId = 0;
+			if (style == 0 && tileType == 0)
+			{
+				itemId = ItemID.DirtBlock;
+				return true;
+			}
+
+			if (style == 0 && tileType == 1)
+			{
+				itemId = ItemID.StoneBlock;
+				return true;
+			}
+
+			if (style == 0 && tileType == 19)
+			{
+				itemId = ItemID.WoodPlatform;
+				return true;
+			}
+
+			foreach (BuildingData.TileSort sort in Enum.GetValues(typeof(BuildingData.TileSort)))
+			{
+				if (sort == BuildingData.TileSort.None)
+					continue;
+				if (!TryResolveSortPlacement(sort, out int tt, out int st))
+					continue;
+				if (tt == tileType && st == style)
+				{
+					itemId = GetItemIdForSort(sort);
+					return true;
+				}
+			}
+
+			return false;
+		}
+
+		private static bool TryScanItemIdForTilePlacement(int tileType, int style, out int itemId)
+		{
+			itemId = 0;
+			int maxId = ItemID.Count;
+			int fallbackSameTile = 0;
+			for (int id = 1; id < maxId; id++)
+			{
+				_placeProbeItem.SetDefaults(id);
+				if (_placeProbeItem.createTile != tileType)
+					continue;
+				if (_placeProbeItem.placeStyle == style)
+				{
+					itemId = id;
+					return true;
+				}
+
+				if (fallbackSameTile == 0)
+					fallbackSameTile = id;
+			}
+
+			if (fallbackSameTile > 0)
+			{
+				itemId = fallbackSameTile;
+				CreateWandMpDebugLog.Write("diag placeChain tile stage=ResolvedItemScanFallback tileType=" + tileType +
+				                           " style=" + style + " item=" + itemId);
+				return true;
+			}
+
+			return false;
+		}
+
+		internal static bool TryResolveWallItemIdForVanillaPlace(int wallType, out int itemId)
+		{
+			itemId = 0;
+			if (wallType <= 0)
+				return false;
+
+			if (_wallPlaceItemCache.TryGetValue(wallType, out int cached))
+			{
+				if (cached > 0)
+				{
+					itemId = cached;
+					return true;
+				}
+
+				return false;
+			}
+
+			Item template = CreateWallTemplateItem();
+			if (template.createWall == wallType)
+			{
+				itemId = template.type;
+				_wallPlaceItemCache[wallType] = itemId;
+				return true;
+			}
+
+			if (TryScanItemIdForWallPlacement(wallType, out itemId))
+			{
+				_wallPlaceItemCache[wallType] = itemId;
+				CreateWandMpDebugLog.Write("diag placeChain wall stage=ResolvedItemScan wallType=" + wallType + " item=" +
+				                           itemId);
+				return true;
+			}
+
+			_wallPlaceItemCache[wallType] = 0;
+			return false;
+		}
+
+		private static bool TryScanItemIdForWallPlacement(int wallType, out int itemId)
+		{
+			itemId = 0;
+			int maxId = ItemID.Count;
+			for (int id = 1; id < maxId; id++)
+			{
+				_placeProbeItem.SetDefaults(id);
+				if (_placeProbeItem.createWall == wallType)
+				{
+					itemId = id;
+					return true;
+				}
+			}
+
+			return false;
+		}
+
+		/// <summary>精准瓦片 → 联机单格 override（墙/物块 1:1；家具仅 Classify 入队）。</summary>
+		internal static bool TryGetPreciseServerCellOverrides(BuildingData data, int originX, int originY, int w, int i,
+			out int tx, out int ty, out BuildingData.TileInfo info, out int? wallOverride, out int? tileOverride,
+			out int? styleOverride)
+		{
+			tx = ty = 0;
+			info = default;
+			wallOverride = null;
+			tileOverride = null;
+			styleOverride = null;
+
+			Tile src = data.GetPreciseTileOrDefault(i);
+			if (src == null)
+				return false;
+
+			tx = originX + i % w;
+			ty = originY + i / w;
+			if (!IsInWorldTile(tx, ty))
+				return false;
+
+			if (src.wall != 0)
+			{
+				info.HasWall = true;
+				wallOverride = src.wall;
+			}
+
+			if (src.active())
+			{
+				info = CreateWandTileBlueprintClassifier.Classify(src.type, src.frameX, src.frameY, src.wall != 0);
+				if (info.Sort <= BuildingData.TileSort.Platform)
+				{
+					tileOverride = src.type;
+					// 斜砖/半砖：先铺整砖，主阶段结束后由手持锤链写 slope/frame
+					if (!CreateWandBlueprintPlacementOrder.PreciseTileHasHammerShape(src))
+						styleOverride = info.HasPlaceStyle ? info.PlaceStyle : GetPreciseTilePlaceStyle(src);
+					else
+						styleOverride = 0;
+				}
+			}
+
+			return true;
+		}
+
+		internal static void SyncHeldItemPlaceStyleForTile(Terraria.Player player, int itemTypeId, int tileType, int style)
+		{
+			Item held = player.inventory[player.selectedItem];
+			if (held == null || held.IsAir || held.type != itemTypeId || held.createTile != tileType)
+				return;
+			held.placeStyle = style;
+		}
+
+		public static bool TryPlacePresetViaServerActions(Terraria.Player player, PlacePreset preset, int cx, int cy,
+			out int minX, out int minY, out int width, out int height)
+		{
+			minX = cx;
+			minY = cy;
+			width = 0;
+			height = 0;
+			if (Main.netMode != 1)
+				return false;
+
+			CreateWandMpDebugLog.Write("PresetViaServer start preset=" + preset + " center=(" + cx + "," + cy + ")");
+
+			int ox;
+			int oy;
+			int w;
+			int h;
+			int tileType;
+			int style = 0;
+			switch (preset)
+			{
+				case PlacePreset.Stone3x3:
+					ox = cx - 1;
+					oy = cy - 1;
+					w = 3;
+					h = 3;
+					tileType = 1;
+					break;
+				case PlacePreset.WoodPlatform5:
+					ox = cx - 2;
+					oy = cy;
+					w = 5;
+					h = 1;
+					tileType = 19;
+					break;
+				case PlacePreset.Dirt2x2:
+					ox = cx;
+					oy = cy;
+					w = 2;
+					h = 2;
+					tileType = 0;
+					break;
+				default:
+					return false;
+			}
+
+			for (int j = 0; j < h; j++)
+			for (int i = 0; i < w; i++)
+			{
+				int x = ox + i;
+				int y = oy + j;
+				TryPlaceTileViaServer(player, x, y, tileType, style, clearBeforePlace: CreateWandSelectionState.ClearAreaBeforePlace);
+			}
+
+			minX = ox;
+			minY = oy;
+			width = w;
+			height = h;
+			return true;
+		}
+
+		/// <summary>预设逐格：与 <see cref="CreateWandSinglePlayerService"/> 同款 PlaceTile，便于发包。</summary>
+		public static void TryPlaceTileVanilla(Terraria.Player player, int x, int y, int tileType, int style)
+		{
+			if (!IsInWorldTile(x, y))
+				return;
+			int n = GetMpTileOperationRepeatCount();
+			bool placed = false;
+			for (int attempt = 0; attempt < n; attempt++)
+			{
+				if (new Tile(y * Main.maxTilesX + x).active())
+				{
+					if (UseMpLocalSilentClears)
+						new Tile(y * Main.maxTilesX + x).ClearTileAndPaint();
+					else
+						WorldGen.KillTile(x, y, false, false, true);
+				}
+
+				placed = WorldGen.PlaceTile(x, y, tileType, false, true, player.whoAmI, style);
+				if (placed)
+					break;
+				if (attempt < n - 1 && Main.netMode == 1 && CreateWandSelectionState.EnableMpActionTrace)
+					CreateWandMpDebugLog.Write(
+						"WorldGen.PlaceTile retry pass " + (attempt + 2) + "/" + n + " x=" + x + " y=" + y + " tileType=" + tileType +
+						" style=" + style);
+			}
+
+			if (placed)
+				WorldGen.SquareTileFrame(x, y, true);
+
+			LogMpWorldGenPlaceTile(player, x, y, tileType, style, placed);
+			if (placed)
+				CreateWandTileRollbackDetector.RegisterTileExpectation(x, y, tileType, "WorldGen.PlaceTile");
+		}
+
+		/// <summary>联机：记录 <see cref="WorldGen.PlaceTile"/> 结果（发包走原版链，不经补丁 <see cref="SendTileManipulation"/>），便于与 outgoing msg17 对照。</summary>
+		private static void LogMpWorldGenPlaceTile(Terraria.Player player, int x, int y, int tileType, int style, bool placed)
+		{
+			if (Main.netMode != 1)
+				return;
+			CreateWandMpDebugLog.Write(
+				"WorldGen.PlaceTile result=" + placed + " x=" + x + " y=" + y + " tileType=" + tileType + " style=" + style +
+				" whoAmI=" + player.whoAmI + " localOnlyNoNet=" + CreateWandSelectionState.MpLocalOnlyNoNet +
+				" (true：原版联机内通常已发 TileManipulation PlaceTile/msg17；对照 CreateWandPatch-outgoing-net.log)");
+		}
+
+		/// <summary>联机：记录 <see cref="WorldGen.PlaceWall"/> 后本格墙 ID，对照 outgoing。</summary>
+		private static void LogMpWorldGenPlaceWall(Terraria.Player player, int x, int y, int wallTypeExpected)
+		{
+			if (Main.netMode != 1)
+				return;
+			Tile t = new Tile(y * Main.maxTilesX + x);
+			int wallAfter = t == null ? -1 : t.wall;
+			CreateWandMpDebugLog.Write(
+				"WorldGen.PlaceWall expectedWall=" + wallTypeExpected + " x=" + x + " y=" + y + " wallAfter=" + wallAfter +
+				" whoAmI=" + player.whoAmI + " localOnlyNoNet=" + CreateWandSelectionState.MpLocalOnlyNoNet +
+				" (wallAfter==expectedWall：本格墙已写上；对照 outgoing msg17 PlaceWall)");
+			if (wallAfter == wallTypeExpected)
+				CreateWandTileRollbackDetector.RegisterWallExpectation(x, y, wallTypeExpected, "WorldGen.PlaceWall");
+		}
+
+		/// <summary>多次 <see cref="WorldGen.PlaceWall"/>：占错墙会先 <see cref="WorldGen.KillWall"/>，与 <see cref="TryPlaceTileVanilla"/> 对称。</summary>
+		private static void PlaceWallWorldGenWithRetries(Terraria.Player player, int x, int y, int wallType)
+		{
+			int n = GetMpTileOperationRepeatCount();
+			for (int attempt = 0; attempt < n; attempt++)
+			{
+				Tile t = new Tile(y * Main.maxTilesX + x);
+				if (t != null && t.wall != 0 && t.wall != wallType)
+					WorldGen.KillWall(x, y, false);
+				if (new Tile(y * Main.maxTilesX + x).wall == 0)
+					WorldGen.PlaceWall(x, y, wallType, false);
+				if (new Tile(y * Main.maxTilesX + x).wall == wallType)
+					break;
+				if (attempt < n - 1 && Main.netMode == 1 && CreateWandSelectionState.EnableMpActionTrace)
+					CreateWandMpDebugLog.Write(
+						"WorldGen.PlaceWall retry pass " + (attempt + 2) + "/" + n + " x=" + x + " y=" + y + " wallType=" + wallType);
+			}
+
+			LogMpWorldGenPlaceWall(player, x, y, wallType);
+		}
+
+		public static void TryClearCellViaServer(Terraria.Player player, int x, int y)
+		{
+			if (Main.netMode != 1 || !IsInWorldTile(x, y))
+			{
+				CreateWandMpDebugLog.Write("Skip clear cell out-of-world (" + x + "," + y + ")");
+				return;
+			}
+			if (CreateWandSelectionState.MpLocalOnlyNoNet)
+			{
+				Tile t = new Tile(y * Main.maxTilesX + x);
+				if (t != null && (t.active() || t.wall != 0 || HasAnyWire(t)))
+					t.ClearEverything();
+				return;
+			}
+			int repeat = GetMpTileOperationRepeatCount();
+			if (CreateWandSelectionState.MpDeleteOnly)
+			{
+				for (int i = 0; i < repeat; i++)
+				{
+					SendTileManipulation(player, TileManipulationAction.KillTile, x, y, 0, 0);
+					SendTileManipulation(player, TileManipulationAction.KillWall, x, y, 0, 0);
+				}
+
+				ClearWiresAtCell(player, x, y);
+
+				Tile t0 = new Tile(y * Main.maxTilesX + x);
+				if (t0 != null)
+				{
+					if (t0.active())
+						t0.ClearTileAndPaint();
+					if (t0.wall != 0)
+						t0.wall = 0;
+				}
+
+				return;
+			}
+
+		// 删除链路独立：按备份版始终走显式 Kill 包，不依赖放置分支与本地状态。
+		for (int i = 0; i < repeat; i++)
+		{
+			SendTileManipulation(player, TileManipulationAction.KillTile, x, y, 0, 0);
+			SendTileManipulation(player, TileManipulationAction.KillWall, x, y, 0, 0);
+		}
+		ClearWiresAtCell(player, x, y);
+
+		// 本地兜底
+		Tile localT2 = new Tile(y * Main.maxTilesX + x);
+		if (localT2 != null)
+		{
+			if (localT2.active())
+				localT2.ClearTileAndPaint();
+			if (localT2.wall != 0)
+				localT2.wall = 0;
+			localT2.wire(false);
+			localT2.wire2(false);
+			localT2.wire3(false);
+			localT2.wire4(false);
+			localT2.actuator(false);
+		}
+
+		}
+		/// <summary>联机：清格与放置分两包（仍由 <paramref name="clearBeforePlace"/> 控制是否先发 Kill）；若只改「放置」策略勿动 <see cref="TryClearCellViaServer"/>。</summary>
+		public static void TryPlaceTileViaServer(Terraria.Player player, int x, int y, int tileType, int style, bool clearBeforePlace)
+		{
+			if (Main.netMode != 1 || !IsInWorldTile(x, y) || tileType < 0)
+			{
+				CreateWandMpDebugLog.Write("Skip place tile invalid x=" + x + " y=" + y + " type=" + tileType + " style=" + style);
+				return;
+			}
+			if (CreateWandSelectionState.MpDeleteOnly)
+			{
+				TryClearCellViaServer(player, x, y);
+				return;
+			}
+			if (CreateWandSelectionState.MpLocalOnlyNoNet)
+			{
+				TryPlaceTileVanilla(player, x, y, tileType, style);
+				return;
+			}
+
+			// 联机实服下每格先 Kill 会显著抬高 TShock 阈值计数，易触发 Disable(Webbed)。
+			// 因此在联机模式默认不做逐格清区，保留放置链本体。
+			bool clearBeforePlaceEffective = clearBeforePlace && Main.netMode != 1;
+
+			// 删除与放置分离：按备份版删除链先发 Kill，不受后续 PlaceThing/WG 路径影响。
+			if (clearBeforePlaceEffective)
+			{
+				int repeatClear = GetMpTileOperationRepeatCount();
+				for (int i = 0; i < repeatClear; i++)
+				{
+					SendTileManipulation(player, TileManipulationAction.KillTile, x, y, 0, 0);
+					Tile lt = new Tile(y * Main.maxTilesX + x);
+					if (lt != null && lt.active())
+						lt.ClearTileAndPaint();
+				}
+			}
+
+			bool isOutOfRange = !IsWithinTShockLikeRange(player, x, y);
+			if (isOutOfRange)
+			{
+				// Do not short-circuit on distance: always attempt place chain and let server decide.
+				CreateWandMpDebugLog.Write(
+					"diag placeChain tile stage=OutOfRangeAttempt x=" + x + " y=" + y + " tileType=" + tileType +
+					" style=" + style + " mode=VanillaHandheldThenExplicitMsg17 " +
+					CreateWandMpPlacementDiagnostics.DescribeCellContext(player, x, y));
+			}
+
+			int placePasses = GetMpTileOperationRepeatCount();
+			int heldItemId = -1;
+			bool heldPlaceThingOk = false;
+			for (int pass = 0; pass < placePasses; pass++)
+			{
+				heldItemId = -1;
+				if (CreateWandSurvivalRemoteCompat.TryPlaceTile(player, x, y, tileType, style))
+				{
+					CreateWandMpDebugLog.Write(
+						"diag placeChain tile stage=SurvivalPlaceThing ok=true x=" + x + " y=" + y + " tileType=" + tileType +
+						" pass=" + (pass + 1) + "/" + placePasses +
+						" msg17Recent=" + CreateWandMpMsg17Probe.DescribeRecentPlaceForCell(x, y, false, 200) + " " +
+						CreateWandMpPlacementDiagnostics.DescribeCellContext(player, x, y));
+					CreateWandTileRollbackDetector.RegisterTileExpectation(x, y, tileType, "SurvivalPlaceThing");
+					return;
+				}
+
+				heldItemId = -1;
+				if (CreateWandSelectionState.MpPreferVanillaHeldItemPlace &&
+				    TryGetTemplateItemIdForPlaceThing(tileType, style, out heldItemId) &&
+				    CreateWandVanillaItemPlaceSim.TryPlaceTileAsIfHoldingBlockItem(player, x, y, heldItemId))
+				{
+					heldPlaceThingOk = true;
+					CreateWandMpDebugLog.Write(
+						"vanilla PlaceThing (发包由原版玩家放置链决定，常见含 msg17；本补丁未再显式打 msg) temp item=" + heldItemId + " at " + x + "," + y);
+					CreateWandMpDebugLog.Write(
+						"diag placeChain tile stage=HeldPlaceThingSim ok=true x=" + x + " y=" + y + " tileType=" + tileType +
+						" item=" + heldItemId + " pass=" + (pass + 1) + "/" + placePasses +
+						" msg17Recent=" + CreateWandMpMsg17Probe.DescribeRecentPlaceForCell(x, y, false, 200) +
+						" " + CreateWandMpPlacementDiagnostics.DescribeCellContext(player, x, y));
+					CreateWandTileRollbackDetector.RegisterTileExpectation(x, y, tileType, "HeldPlaceThingSim");
+					return;
+				}
+
+				heldPlaceThingOk = false;
+			}
+
+			CreateWandMpDebugLog.Write(
+				"diag placeChain tile stage=PlaceThingFailedAll x=" + x + " y=" + y + " tileType=" + tileType + " style=" + style +
+				" survivalTried=" + (Main.netMode == 1 && CreateWandSelectionState.MpSurvivalInventoryPlaceFirst && !Main.IsJourneyMode) +
+				" heldTried=" + (heldItemId >= 0) + " heldOk=" + heldPlaceThingOk +
+				" msg17Recent=" + CreateWandMpMsg17Probe.DescribeRecentPlaceForCell(x, y, false, 200) + " " +
+				CreateWandMpPlacementDiagnostics.DescribeCellContext(player, x, y));
+
+			if (isOutOfRange)
+			{
+				int explicitPasses = GetMpTileOperationRepeatCount();
+				for (int i = 0; i < explicitPasses; i++)
+					SendTileManipulation(player, TileManipulationAction.PlaceTile, x, y, tileType, style);
+				CreateWandMpDebugLog.Write(
+					"diag placeChain tile stage=OutOfRangeExplicitMsg17 placeSent passes=" + explicitPasses +
+					" x=" + x + " y=" + y + " tileType=" + tileType + " style=" + style);
+			}
+
+			// 手持链失败：旧版回退 WorldGen；开启 MpManualLikeSkipWorldGenFallback 时贴近「纯手点」——不回退，避免混用两条发包语义。
+			if (!CreateWandSelectionState.MpManualLikeSkipWorldGenFallback)
+			{
+				CreateWandMpDebugLog.Write("diag placeChain tile stage=FallbackWorldGenDelayedEnqueue x=" + x + " y=" + y +
+				                           " tileType=" + tileType + " style=" + style +
+				                           " mode=VanillaHandheldThenExplicitMsg17 delayFrames=" +
+				                           CreateWandDeferredWgFallbackQueue.TileFallbackDelayFrames);
+				CreateWandDeferredWgFallbackQueue.EnqueueTileFallbackNextFrame(player, x, y, tileType, style);
+			}
+			else
+				CreateWandMpDebugLog.Write("manual-like skip WorldGen fallback x=" + x + " y=" + y + " tileType=" + tileType +
+				                           " style=" + style + " reason=MpManualLikeSkipWorldGenFallback=true");
+		}
+
+		public static void TryPlaceWallViaServer(Terraria.Player player, int x, int y, int wallType, bool clearBeforePlace)
+		{
+			if (Main.netMode != 1 || !IsInWorldTile(x, y) || wallType <= 0)
+			{
+				CreateWandMpDebugLog.Write("Skip place wall invalid x=" + x + " y=" + y + " wall=" + wallType);
+				return;
+			}
+			if (CreateWandSelectionState.MpDeleteOnly)
+			{
+				TryClearCellViaServer(player, x, y);
+				return;
+			}
+			if (CreateWandSelectionState.MpLocalOnlyNoNet)
+			{
+				int n = GetMpTileOperationRepeatCount();
+				if (clearBeforePlace && new Tile(y * Main.maxTilesX + x).wall != 0)
+					new Tile(y * Main.maxTilesX + x).Clear(TileDataType.Wall | TileDataType.WallPaint);
+				for (int attempt = 0; attempt < n; attempt++)
+				{
+					Tile tl = new Tile(y * Main.maxTilesX + x);
+					if (tl != null && tl.wall != 0 && tl.wall != wallType)
+						tl.Clear(TileDataType.Wall | TileDataType.WallPaint);
+					if (new Tile(y * Main.maxTilesX + x).wall == 0)
+					{
+						WorldGen.PlaceWall(x, y, wallType, false);
+						if (new Tile(y * Main.maxTilesX + x).wall == wallType)
+							break;
+					}
+
+					if (attempt < n - 1 && CreateWandSelectionState.EnableMpActionTrace)
+						CreateWandMpDebugLog.Write(
+							"WorldGen.PlaceWall (local) retry pass " + (attempt + 2) + "/" + n + " x=" + x + " y=" + y + " wallType=" + wallType);
+				}
+
+				LogMpWorldGenPlaceWall(player, x, y, wallType);
+				return;
+			}
+
+			// 同上：联机默认不逐格清墙，避免快速累积到 TShock 的阈值。
+			bool clearBeforePlaceEffective = clearBeforePlace && Main.netMode != 1;
+			bool isOutOfRange = !IsWithinTShockLikeRange(player, x, y);
+
+			if (clearBeforePlaceEffective)
+			{
+				int repeatWallClear = GetMpTileOperationRepeatCount();
+				for (int i = 0; i < repeatWallClear; i++)
+				{
+					SendTileManipulation(player, TileManipulationAction.KillWall, x, y, 0, 0);
+					Tile tw = new Tile(y * Main.maxTilesX + x);
+					if (tw != null && tw.wall != 0)
+						tw.wall = 0;
+				}
+			}
+
+			int wallPasses = GetMpTileOperationRepeatCount();
+			bool wallPlaced = false;
+			for (int pass = 0; pass < wallPasses; pass++)
+			{
+				if (CreateWandSurvivalRemoteCompat.TryPlaceWall(player, x, y, wallType))
+				{
+					wallPlaced = true;
+					break;
+				}
+
+				if (CreateWandSelectionState.MpPreferVanillaHeldItemPlace &&
+				    TryResolveWallItemIdForVanillaPlace(wallType, out int wallHoldItemId) &&
+				    CreateWandVanillaItemPlaceSim.TryPlaceWallAsIfHoldingWallItem(player, x, y, wallHoldItemId))
+				{
+					CreateWandMpDebugLog.Write(
+						"vanilla PlaceThing_Walls (发包由原版链，常见含 msg17；本补丁未再显式打 msg) wall item=" + wallHoldItemId +
+						" pass=" + (pass + 1) + "/" + wallPasses + " at " + x + "," + y);
+					CreateWandTileRollbackDetector.RegisterWallExpectation(x, y, wallType, "HeldPlaceWallSim");
+					wallPlaced = true;
+					break;
+				}
+			}
+
+			// 超距时 PlaceThing 常只写本机墙；须仍发 msg17 PlaceWall，否则服端无墙（蓝图大面积铺墙时几乎格格超距）。
+			if (isOutOfRange || CreateWandSelectionState.MpAllowOutOfRangePlacementAttempts)
+			{
+				int explicitPasses = GetMpTileOperationRepeatCount();
+				for (int i = 0; i < explicitPasses; i++)
+					SendTileManipulation(player, TileManipulationAction.PlaceWall, x, y, wallType, 0);
+				CreateWandMpDebugLog.Write(
+					"diag placeChain wall stage=OutOfRangeExplicitMsg17 placeWallSent passes=" + explicitPasses +
+					" localWallOk=" + wallPlaced + " x=" + x + " y=" + y + " wallType=" + wallType);
+				return;
+			}
+
+			if (!wallPlaced)
+				PlaceWallWorldGenWithRetries(player, x, y, wallType);
+		}
+
+		private static bool IsFurnitureLightSort(BuildingData.TileSort sort) =>
+			sort is BuildingData.TileSort.Torch or BuildingData.TileSort.Candle or BuildingData.TileSort.Lantern
+				or BuildingData.TileSort.Chandelier or BuildingData.TileSort.Lamp or BuildingData.TileSort.Campfire;
+
+		private static bool IsCeilingLightSort(BuildingData.TileSort sort) =>
+			sort is BuildingData.TileSort.Lantern or BuildingData.TileSort.Chandelier;
+
+		private static bool IsSurfaceLightSort(BuildingData.TileSort sort) =>
+			sort is BuildingData.TileSort.Candle or BuildingData.TileSort.Lamp or BuildingData.TileSort.Campfire;
+
+		private static bool IsFurnitureChestLikeSort(BuildingData.TileSort sort) =>
+			sort is BuildingData.TileSort.Chest or BuildingData.TileSort.Dresser;
+
+		private static bool IsValidFurnitureSupportTile(int tileType)
+		{
+			if (tileType < 0 || tileType >= TileID.Count)
+				return false;
+			if (Main.tileSolid != null && tileType < Main.tileSolid.Length && Main.tileSolid[tileType])
+				return true;
+			if (Main.tileSolidTop != null && tileType < Main.tileSolidTop.Length && Main.tileSolidTop[tileType])
+				return true;
+			return TileID.Sets.Platforms != null && tileType < TileID.Sets.Platforms.Length && TileID.Sets.Platforms[tileType];
+		}
+
+		/// <summary>
+		/// 与仅本地 <see cref="ApplyLegacyFurnitureCell"/> 一致：椅/桌/工作台等在蓝图空气格放置；
+		/// 台灯/蜡烛等点承托面；挂灯/火把用蓝图格。
+		/// </summary>
+		private static void ResolveFurniturePlaceTarget(int blueprintX, int blueprintY, BuildingData.TileInfo info,
+			BuildingData.TileSort sort, out int placeX, out int placeY)
+		{
+			placeX = blueprintX;
+			placeY = blueprintY;
+
+			if (IsCeilingLightSort(sort) || sort == BuildingData.TileSort.Torch)
+				return;
+
+			if (IsSurfaceLightSort(sort))
+				TryResolveSupportBelow(blueprintX, blueprintY, out placeX, out placeY);
+		}
+
+		private static void TryResolveSupportBelow(int blueprintX, int blueprintY, out int placeX, out int placeY)
+		{
+			placeX = blueprintX;
+			placeY = blueprintY;
+			if (blueprintY + 1 >= Main.maxTilesY)
+				return;
+			Tile below = new Tile(blueprintY + 1 * Main.maxTilesX + blueprintX);
+			if (below != null && below.active() && IsValidFurnitureSupportTile(below.type))
+			{
+				placeX = blueprintX;
+				placeY = blueprintY + 1;
+			}
+		}
+
+		private static long FurniturePlaceAnchorKey(int tileType, int style, int placeX, int placeY) =>
+			unchecked(((long)tileType << 40) | ((long)style << 24) | ((long)placeX << 12) | (uint)placeY);
+
+		/// <summary>色图多格家具只排队一次（按解析后的放置锚点去重）。</summary>
+		internal static bool TryEnqueueUniqueFurnitureJob(List<LegacyFurnitureJob> list, HashSet<long> seenAnchors,
+			BuildingData.TileInfo info, int tx, int ty)
+		{
+			if (!TryResolveFurniturePlacement(info, out int tileType, out int style))
+				return false;
+			ResolveFurniturePlaceTarget(tx, ty, info, info.Sort, out int placeX, out int placeY);
+			long key = FurniturePlaceAnchorKey(tileType, style, placeX, placeY);
+			if (!seenAnchors.Add(key))
+				return false;
+			list.Add(new LegacyFurnitureJob(info, tx, ty));
+			return true;
+		}
+
+		private static void SyncHeldItemPlaceStyleForFurniture(Terraria.Player player, int itemTypeId, int tileType, int style)
+		{
+			Item held = player.inventory[player.selectedItem];
+			if (held == null || held.IsAir || held.type != itemTypeId || held.createTile != tileType)
+				return;
+			held.placeStyle = style;
+		}
+
+		/// <summary>CustomPlace 家具：TileObject + msg79；否则与本地相同 PlaceTile + msg17。</summary>
+		private static bool TryPlaceFurnitureTileMp(Terraria.Player player, int placeX, int placeY, int tileType, int style,
+			int direction, BuildingData.TileSort sort)
+		{
+			if (IsFurnitureChestLikeSort(sort))
+			{
+				int subType = sort == BuildingData.TileSort.Dresser ? 2 : 0;
+				NetMessage.SendData((int)MessageID.ChestUpdates, -1, -1, null, subType, placeX, placeY, style);
+				CreateWandMpDebugLog.Write(
+					"msg34 ChestUpdates (held) sub=" + subType + " at " + placeX + "," + placeY + " style=" + style);
+				return IsFurnitureTilePlacedAt(placeX, placeY, tileType, style);
+			}
+
+			bool customPlace = TileObjectData.CustomPlace(tileType, style);
+			if (!customPlace)
+			{
+				if (!WorldGen.PlaceTile(placeX, placeY, tileType, false, true, player.whoAmI, style))
+					return false;
+				WorldGen.SquareTileFrame(placeX, placeY, true);
+				NetMessage.SendData((int)MessageID.TileManipulation, -1, -1, null, 1, placeX, placeY, tileType, style);
+				CreateWandMpDebugLog.Write(
+					"msg17 PlaceTile legacyFurniture at " + placeX + "," + placeY + " type=" + tileType + " style=" + style);
+				return IsFurnitureTilePlacedAt(placeX, placeY, tileType, style);
+			}
+
+			if (!TileObject.CanPlace(placeX, placeY, (ushort)tileType, style, direction, out TileObject data, false, null))
+			{
+				CreateWandMpDebugLog.Write(
+					"diag furniture CanPlace=false at " + placeX + "," + placeY + " type=" + tileType + " style=" + style +
+					" dir=" + direction);
+				return false;
+			}
+
+			if (!TileObject.Place(data))
+				return false;
+
+			WorldGen.SquareTileFrame(placeX, placeY);
+			if (!TileID.Sets.IsAContainer[tileType] && tileType != 423)
+			{
+				Item held = player.inventory[player.selectedItem];
+				NetMessage.SendObjectPlacement(-1, placeX, placeY, data.type, data.style, data.alternate, data.random,
+					direction);
+				CreateWandMpDebugLog.Write(
+					"msg79 SendObjectPlacement (held) at " + placeX + "," + placeY + " type=" + data.type + " style=" +
+					data.style + " alt=" + data.alternate + " rnd=" + data.random + " dir=" + direction +
+					" held.type=" + (held?.type ?? -1) + " held.createTile=" + (held?.createTile ?? -1) +
+					" held.placeStyle=" + (held?.placeStyle ?? -1));
+			}
+
+			return IsFurnitureTilePlacedAt(placeX, placeY, tileType, style);
+		}
+
+		/// <summary>手持材料期间：PlaceThing →（失败）按 CustomPlace 分流 msg79 / msg17。</summary>
+		private static bool TryMpFurniturePlaceChain(Terraria.Player player, int placeX, int placeY, int itemId,
+			int tileType, int style, bool flip, BuildingData.TileSort sort)
+		{
+			int direction = flip ? -1 : 1;
+			return CreateWandSurvivalRemoteCompat.TryExecuteWhileHoldingPlaceMaterial(player, placeX, placeY, itemId,
+				direction, () =>
+				{
+					SyncHeldItemPlaceStyleForFurniture(player, itemId, tileType, style);
+					CreateWandVanillaItemPlaceSim.InvokePlaceThingAt(player, placeX, placeY);
+					if (IsFurnitureTilePlacedAt(placeX, placeY, tileType, style))
+						return true;
+
+					return TryPlaceFurnitureTileMp(player, placeX, placeY, tileType, style, direction, sort);
+				});
+		}
+
+		internal static bool IsFurnitureTilePlacedAt(int placeX, int placeY, int tileType, int style)
+		{
+			Tile t = new Tile(placeY * Main.maxTilesX + placeX);
+			if (t != null && t.active() && t.type == tileType)
+				return true;
+
+			TileObjectData data = TileObjectData.GetTileData(tileType, style, 0);
+			if (data == null)
+				return false;
+
+			int ox = placeX - data.Origin.X;
+			int oy = placeY - data.Origin.Y;
+			for (int dx = 0; dx < data.Width; dx++)
+			for (int dy = 0; dy < data.Height; dy++)
+			{
+				int tx = ox + dx;
+				int ty = oy + dy;
+				if (!IsInWorldTile(tx, ty))
+					continue;
+				Tile cell = new Tile(ty * Main.maxTilesX + tx);
+				if (cell != null && cell.active() && cell.type == tileType)
+					return true;
+			}
+
+			return false;
+		}
+
+		/// <summary>联机家具：手持材料期间 PlaceThing + msg34/msg79。</summary>
+		internal static void TryPlaceFurnitureViaServer(Terraria.Player player, LegacyFurnitureJob job, bool clearBeforePlace)
+		{
+			int x = job.X;
+			int y = job.Y;
+			if (Main.netMode != 1 || !IsInWorldTile(x, y))
+				return;
+			if (CreateWandSelectionState.MpDeleteOnly)
+			{
+				TryClearCellViaServer(player, x, y);
+				return;
+			}
+			if (CreateWandSelectionState.MpLocalOnlyNoNet)
+			{
+				ApplyLegacyFurnitureCell(player, job);
+				return;
+			}
+
+			if (!TryResolveFurniturePlacement(job.Info, out int tileType, out int style))
+				return;
+
+			int itemId = GetItemIdForSort(job.Info.Sort);
+			ResolveFurniturePlaceTarget(x, y, job.Info, job.Info.Sort, out int placeX, out int placeY);
+
+			if (IsFurnitureTilePlacedAt(x, y, tileType, style) || IsFurnitureTilePlacedAt(placeX, placeY, tileType, style))
+			{
+				ApplyFlipHack(job.Info, x, y);
+				return;
+			}
+
+			// 椅/桌/书架等与仅本地一致：优先蓝图格；台灯/蜡烛等用 Resolve 后的承托格
+			bool placed = TryMpFurniturePlaceChain(player, placeX, placeY, itemId, tileType, style, job.Info.Flip,
+				job.Info.Sort);
+
+			if (!placed && IsSurfaceLightSort(job.Info.Sort) && (placeX != x || placeY != y))
+				placed = TryMpFurniturePlaceChain(player, x, y, itemId, tileType, style, job.Info.Flip, job.Info.Sort);
+
+			if (!placed && IsCeilingLightSort(job.Info.Sort) && placeY == y && y > 0)
+				placed = TryMpFurniturePlaceChain(player, placeX, y - 1, itemId, tileType, style, job.Info.Flip,
+					job.Info.Sort);
+
+			if (!placed && !IsFurnitureLightSort(job.Info.Sort) && (placeX != x || placeY != y))
+				placed = TryMpFurniturePlaceChain(player, x, y, itemId, tileType, style, job.Info.Flip, job.Info.Sort);
+
+			if (!placed && IsFurnitureChestLikeSort(job.Info.Sort))
+				TryPlaceTileViaServer(player, placeX, placeY, tileType, style, clearBeforePlace);
+
+			if (placed || IsFurnitureTilePlacedAt(x, y, tileType, style) ||
+			    IsFurnitureTilePlacedAt(placeX, placeY, tileType, style))
+				ApplyFlipHack(job.Info, x, y);
+			else
+				CreateWandMpDebugLog.Write(
+					"diag placeChain furniture stage=PlaceThingFailedAll blueprint=" + x + "," + y + " placeAt=" + placeX +
+					"," + placeY + " tileType=" + tileType + " style=" + style + " item=" + itemId + " sort=" + job.Info.Sort +
+					" " + CreateWandMpPlacementDiagnostics.DescribeCellContext(player, placeX, placeY));
+		}
+
+		internal struct LegacyFurnitureJob
+		{
+			public LegacyFurnitureJob(BuildingData.TileInfo info, int x, int y)
+			{
+				Info = info;
+				X = x;
+				Y = y;
+			}
+
+			public BuildingData.TileInfo Info;
+			public int X;
+			public int Y;
+		}
+
+		/// <summary>
+		/// 联机单格：与 <see cref="CreateWandStaggeredPlacementQueue.LegacyBlueprintJob"/> 主循环一致。
+		/// 色图：override 为 null，用 <paramref name="info"/> + <paramref name="defaultWallType"/>。
+		/// 精准：overrideWall/Tile/Style 为 1:1 目标；家具仍由 <paramref name="info"/> 的 Classify 入队。
+		/// </summary>
+		internal static void TryPlaceLegacyServerCell(Terraria.Player player, int tx, int ty, BuildingData.TileInfo info,
+			int defaultWallType, int? overrideWallType, int? overrideTileType, int? overrideTileStyle,
+			List<LegacyFurnitureJob> furnitureLater, HashSet<long> furnitureAnchors)
+		{
+			if (!IsInWorldTile(tx, ty))
+				return;
+
+			bool clear = CreateWandSelectionState.ClearAreaBeforePlace;
+
+			if (overrideWallType.HasValue && overrideWallType.Value > 0)
+				TryPlaceWallViaServer(player, tx, ty, overrideWallType.Value, clear);
+			else if (info.HasWall)
+				TryPlaceWallViaServer(player, tx, ty, defaultWallType, clear);
+
+			if (overrideTileType.HasValue)
+			{
+				if (info.Sort > BuildingData.TileSort.Platform)
+				{
+					TryEnqueueUniqueFurnitureJob(furnitureLater, furnitureAnchors, info, tx, ty);
+					return;
+				}
+
+				int tileType = overrideTileType.Value;
+				int style = overrideTileStyle ?? 0;
+				TryPlaceTileViaServer(player, tx, ty, tileType, style, clear);
+				return;
+			}
+
+			if (info.Sort == BuildingData.TileSort.None)
+				return;
+
+			if (info.Sort - BuildingData.TileSort.Block <= 1)
+			{
+				if (TryResolveSortPlacement(info.Sort, out int tileType, out int style))
+					TryPlaceTileViaServer(player, tx, ty, tileType, style, clear);
+			}
+			else
+				TryEnqueueUniqueFurnitureJob(furnitureLater, furnitureAnchors, info, tx, ty);
+		}
+
+		internal static void ApplyLegacyMainLoopCell(Terraria.Player player, BuildingData data, int originX, int originY,
+			int i, Item wallTemplate, List<LegacyFurnitureJob> furnitureLater, HashSet<long> furnitureAnchors)
+		{
+			int tx = originX + i % data.Width;
+			int ty = originY + i / data.Width;
+			if (tx < 0 || ty < 0 || tx >= Main.maxTilesX || ty >= Main.maxTilesY)
+				return;
+
+			BuildingData.TileInfo tileInfo = data.TileInfos[i];
+			if (tileInfo.HasWall)
+				TryPlaceWallRaw(player, tx, ty, wallTemplate);
+			if (tileInfo.Sort != BuildingData.TileSort.None)
+			{
+				if (tileInfo.Sort - BuildingData.TileSort.Block <= 1)
+				{
+					Item placeItem = CreateTemplateItem(GetItemIdForSort(tileInfo.Sort));
+					TryPlaceTileFromItem(player, tx, ty, placeItem);
+				}
+				else
+					TryEnqueueUniqueFurnitureJob(furnitureLater, furnitureAnchors, tileInfo, tx, ty);
+			}
+		}
+
+		internal static void ApplyLegacyFurnitureCell(Terraria.Player player, LegacyFurnitureJob job, bool localForMpRegionSync = false)
+		{
+			int x = job.X;
+			int y = job.Y;
+			if (!new Tile(y * Main.maxTilesX + x).active())
+			{
+				Item item3 = CreateTemplateItem(GetItemIdForSort(job.Info.Sort));
+				if (TryPlaceTileFromItem(player, x, y, item3, localForMpRegionSync))
+					ApplyFlipHack(job.Info, x, y);
+			}
+		}
+
+		/// <summary>精确格：墙/物块/家具数据；液体留到 <see cref="ApplyPreciseCellLiquid"/>。</summary>
+		internal static void ApplyPreciseCellStructure(Terraria.Player player, BuildingData data, int originX, int originY,
+			int w, int i)
+		{
+			Tile src = data.GetPreciseTileOrDefault(i);
+			if (src == null)
+				return;
+			int tx = originX + i % w;
+			int ty = originY + i / w;
+			if (!IsInWorldTile(tx, ty))
+				return;
+
+			ApplyPreciseTileFromSource(tx, ty, src, deferLiquid: true);
+		}
+
+		/// <summary>联机 msg17 铺整砖后：从蓝图还原斜砖/半砖/染色/线路（勿 SquareTileFrame 冲掉）。</summary>
+		internal static void ApplyPreciseCellVisualRestore(BuildingData data, int originX, int originY, int w, int i)
+		{
+			Tile src = data.GetPreciseTileOrDefault(i);
+			if (src == null || !CreateWandBlueprintPlacementOrder.PreciseTileNeedsVisualRestore(src))
+				return;
+			int tx = originX + i % w;
+			int ty = originY + i / w;
+			if (!IsInWorldTile(tx, ty))
+				return;
+
+			// 无 active 的斜砖/半砖格须整格 CopyFrom，不能只改 header
+			if (!src.active() && CreateWandBlueprintPlacementOrder.PreciseTileHasHammerShape(src))
+			{
+				ApplyPreciseTileFromSource(tx, ty, src, deferLiquid: true);
+				return;
+			}
+
+			ApplyPreciseTileVisualState(new Tile(ty * Main.maxTilesX + tx), src);
+			MaybeSquareTileFrameAfterPrecise(tx, ty, src);
+		}
+
+		private static void ApplyPreciseTileFromSource(int tx, int ty, Tile src, bool deferLiquid)
+		{
+			if (src == null || !IsInWorldTile(tx, ty))
+				return;
+			ApplyPreciseTileFullClone(new Tile(ty * Main.maxTilesX + tx), src, deferLiquid);
+			MaybeSquareTileFrameAfterPrecise(tx, ty, src);
+		}
+
+		/// <summary>整格克隆（含 sTileHeader 内斜面方向/半砖/染色/线路），写入世界存档。</summary>
+		private static void ApplyPreciseTileFullClone(Tile dest, Tile src, bool deferLiquid)
+		{
+			if (dest == null || src == null)
+				return;
+
+			dest.type = src.type;
+			dest.wall = src.wall;
+			dest.frameX = src.frameX;
+			dest.frameY = src.frameY;
+			dest.sTileHeader = src.sTileHeader;
+			dest.bTileHeader = src.bTileHeader;
+			dest.bTileHeader2 = src.bTileHeader2;
+			dest.bTileHeader3 = src.bTileHeader3;
+			if (deferLiquid)
+				dest.liquid = 0;
+			else
+			{
+				dest.liquid = src.liquid;
+				dest.liquidType(src.liquidType());
+			}
+		}
+
+		/// <summary>主/液体阶段结束后：按蓝图整区重写，修复相邻格 SquareTileFrame 冲掉的左斜砖等。</summary>
+		internal static void FinalizePreciseBlueprintRegion(BuildingData data, int originX, int originY)
+		{
+			if (data == null || !data.HasAnyPreciseCellToPlace())
+				return;
+
+			int w = data.Width;
+			int h = data.Height;
+			CreateWandBlueprintPlacementOrder.BuildPrecisePassIndices(data, out int[] mainCells, out int[] liquidCells);
+
+			for (int m = 0; m < mainCells.Length; m++)
+			{
+				int i = mainCells[m];
+				Tile src = data.GetPreciseTileOrDefault(i);
+				if (src == null)
+					continue;
+				int tx = originX + i % w;
+				int ty = originY + i / w;
+				if (!IsInWorldTile(tx, ty))
+					continue;
+				ApplyPreciseTileFullClone(new Tile(ty * Main.maxTilesX + tx), src, deferLiquid: true);
+			}
+
+			for (int l = 0; l < liquidCells.Length; l++)
+			{
+				int i = liquidCells[l];
+				Tile src = data.GetPreciseTileOrDefault(i);
+				if (src == null || src.liquid == 0)
+					continue;
+				int tx = originX + i % w;
+				int ty = originY + i / w;
+				if (!IsInWorldTile(tx, ty))
+					continue;
+				Tile tileLq = new Tile(ty * Main.maxTilesX + tx);
+				tileLq.liquid = src.liquid;
+				tileLq.SetLiquid(src.liquid);
+			}
+		}
+
+		/// <summary>联机收尾：将本机已克隆的精确区域同步到服端（需权限，默认关）。</summary>
+		internal static void SyncPreciseBlueprintToServerIfEnabled(int originX, int originY, int width, int height)
+		{
+			if (!CreateWandSelectionState.MpSyncPreciseTilesAfterBlueprint)
+				return;
+			SyncTileRegionToServerIfMpClient(originX, originY, width, height, force: true);
+		}
+
+		private static void ApplyPreciseTileVisualState(Tile dest, Tile src) => ApplyPreciseTileFullClone(dest, src, deferLiquid: true);
+
+		/// <summary>SquareTileFrame(true) 会重算相邻融合并抹掉斜砖/半砖/涂料。</summary>
+		private static void MaybeSquareTileFrameAfterPrecise(int tx, int ty, Tile src)
+		{
+			if (DeferSquareTileFrameDuringPreciseBlueprint || src == null ||
+			    CreateWandBlueprintPlacementOrder.PreciseTileNeedsVisualRestore(src))
+				return;
+			WorldGen.SquareTileFrame(tx, ty, true);
+		}
+
+		/// <summary>液体阶段：仅写入液体（自下而上队列的最后一轮）。</summary>
+		internal static void ApplyPreciseCellLiquid(Terraria.Player player, BuildingData data, int originX, int originY,
+			int w, int i)
+		{
+			Tile src = data.GetPreciseTileOrDefault(i);
+			if (src == null || src.liquid == 0)
+				return;
+			int tx = originX + i % w;
+			int ty = originY + i / w;
+			if (!IsInWorldTile(tx, ty))
+				return;
+
+			if (Main.netMode == 1)
+				CreateWandPreciseHandheldExtras.TryApplyLiquidViaBucket(player, tx, ty, src);
+			else
+			{
+				Tile dest = new Tile(ty * Main.maxTilesX + tx);
+				if (!dest.active() && dest.wall == 0)
+					dest.CopyFrom(src);
+				else
+					dest.liquid = src.liquid;
+				MaybeSquareTileFrameAfterPrecise(tx, ty, src);
+			}
+		}
+
+		internal static void ApplyPreciseCell(Terraria.Player player, BuildingData data, int originX, int originY, int w, int i)
+		{
+			ApplyPreciseCellStructure(player, data, originX, originY, w, i);
+			ApplyPreciseCellLiquid(player, data, originX, originY, w, i);
+		}
+
+		private static void IncludePreciseCellInBounds(int originX, int originY, int w, int i, ref int minX, ref int minY,
+			ref int maxX, ref int maxY)
+		{
+			int tx = originX + i % w;
+			int ty = originY + i / w;
+			if (!IsInWorldTile(tx, ty))
+				return;
+			minX = Math.Min(minX, tx);
+			minY = Math.Min(minY, ty);
+			maxX = Math.Max(maxX, tx);
+			maxY = Math.Max(maxY, ty);
+		}
+
+		private static int GetPreciseTilePlaceStyle(Tile src)
+		{
+			if (src == null || !src.active())
+				return 0;
+			int type = src.type;
+			if (TileID.Sets.Platforms != null && type < TileID.Sets.Platforms.Length && TileID.Sets.Platforms[type])
+				return src.frameY / 18;
+			TileObjectData data = TileObjectData.GetTileData(type, 0, 0);
+			if (data != null && data.CoordinateFullHeight > 0)
+				return src.frameY / data.CoordinateFullHeight;
+			return 0;
+		}
+
+		/// <summary>联机精准格：委托 <see cref="TryGetPreciseServerCellOverrides"/> + <see cref="TryPlaceLegacyServerCell"/>。</summary>
+		internal static void TryPlacePreciseCellViaServer(Terraria.Player player, BuildingData data, int originX, int originY,
+			int w, int i, List<LegacyFurnitureJob> furnitureLater, HashSet<long> furnitureAnchors)
+		{
+			if (!TryGetPreciseServerCellOverrides(data, originX, originY, w, i, out int tx, out int ty, out BuildingData.TileInfo info,
+				    out int? wallOverride, out int? tileOverride, out int? styleOverride))
+				return;
+
+			TryPlaceLegacyServerCell(player, tx, ty, info, GetDefaultWallType(), wallOverride, tileOverride, styleOverride,
+				furnitureLater, furnitureAnchors);
+		}
+
+		private static void ApplyPreciseHandheldExtrasPass(Terraria.Player player, BuildingData data, int originX,
+			int originY)
+		{
+			if (player == null || data == null)
+				return;
+			CreateWandPreciseHandheldExtras.BuildHandheldExtraIndices(data, out int[] indices);
+			int w = data.Width;
+			for (int h = 0; h < indices.Length; h++)
+				CreateWandPreciseHandheldExtras.TryApplyHandheldExtras(player, data, originX, originY, w, indices[h]);
+		}
+
+		private static bool PlacePreciseCopyViaServerActions(Terraria.Player player, BuildingData data, int originX, int originY,
+			out int minX, out int minY, out int outW, out int outH)
+		{
+			if (!data.HasAnyPreciseCellToPlace())
+			{
+				minX = minY = outW = outH = 0;
+				return false;
+			}
+
+			int w = data.Width;
+			int h = data.Height;
+			BeginPreciseBlueprintPlacement();
+			try
+			{
+				if (CreateWandSelectionState.ClearAreaBeforePlace && w > 0 && h > 0)
+					ClearTilesAndWallsInRect(originX, originY, w, h);
+
+				minX = int.MaxValue;
+				minY = int.MaxValue;
+				int maxX = int.MinValue;
+				int maxY = int.MinValue;
+				var furnitureLater = new List<LegacyFurnitureJob>();
+				var furnitureAnchors = new HashSet<long>();
+				CreateWandBlueprintPlacementOrder.BuildPrecisePassIndices(data, out int[] mainCells, out int[] liquidCells);
+
+				for (int m = 0; m < mainCells.Length; m++)
+				{
+					int i = mainCells[m];
+					IncludePreciseCellInBounds(originX, originY, w, i, ref minX, ref minY, ref maxX, ref maxY);
+					TryPlacePreciseCellViaServer(player, data, originX, originY, w, i, furnitureLater, furnitureAnchors);
+				}
+
+				for (int j = 0; j < furnitureLater.Count; j++)
+					TryPlaceFurnitureViaServer(player, furnitureLater[j],
+						clearBeforePlace: CreateWandSelectionState.ClearAreaBeforePlace);
+
+				ApplyPreciseHandheldExtrasPass(player, data, originX, originY);
+
+				for (int l = 0; l < liquidCells.Length; l++)
+				{
+					int i = liquidCells[l];
+					IncludePreciseCellInBounds(originX, originY, w, i, ref minX, ref minY, ref maxX, ref maxY);
+					ApplyPreciseCellLiquid(player, data, originX, originY, w, i);
+				}
+
+				if (minX == int.MaxValue)
+				{
+					outW = 0;
+					outH = 0;
+					return false;
+				}
+
+				outW = maxX - minX + 1;
+				outH = maxY - minY + 1;
+				SyncPreciseBlueprintToServerIfEnabled(originX, originY, data.Width, data.Height);
+				return true;
+			}
+			finally
+			{
+				EndPreciseBlueprintPlacement();
+			}
+		}
+
+		private static bool PlacePreciseCopy(Terraria.Player player, BuildingData data, int originX, int originY,
+			out int minX, out int minY, out int outW, out int outH)
+		{
+			if (!data.HasAnyPreciseCellToPlace())
+			{
+				minX = minY = outW = outH = 0;
+				return false;
+			}
+
+			int w = data.Width;
+			int h = data.Height;
+			BeginPreciseBlueprintPlacement();
+			try
+			{
+				if (CreateWandSelectionState.ClearAreaBeforePlace && w > 0 && h > 0)
+					ClearTilesAndWallsInRect(originX, originY, w, h);
+
+				minX = int.MaxValue;
+				minY = int.MaxValue;
+				int maxX = int.MinValue;
+				int maxY = int.MinValue;
+				CreateWandBlueprintPlacementOrder.BuildPrecisePassIndices(data, out int[] mainCells, out int[] liquidCells);
+
+				for (int m = 0; m < mainCells.Length; m++)
+				{
+					int i = mainCells[m];
+					IncludePreciseCellInBounds(originX, originY, w, i, ref minX, ref minY, ref maxX, ref maxY);
+					ApplyPreciseCellStructure(player, data, originX, originY, w, i);
+				}
+
+				ApplyPreciseHandheldExtrasPass(player, data, originX, originY);
+
+				for (int l = 0; l < liquidCells.Length; l++)
+				{
+					int i = liquidCells[l];
+					IncludePreciseCellInBounds(originX, originY, w, i, ref minX, ref minY, ref maxX, ref maxY);
+					ApplyPreciseCellLiquid(player, data, originX, originY, w, i);
+				}
+
+				if (minX == int.MaxValue)
+				{
+					outW = 0;
+					outH = 0;
+					return false;
+				}
+
+				outW = maxX - minX + 1;
+				outH = maxY - minY + 1;
+				return true;
+			}
+			finally
+			{
+				EndPreciseBlueprintPlacement();
+			}
+		}
+
+		private static bool PlaceLegacySortMap(Terraria.Player player, BuildingData data, int originX, int originY,
+			out int minX, out int minY, out int outW, out int outH)
+		{
+			if (CreateWandSelectionState.ClearAreaBeforePlace && data.Width > 0 && data.Height > 0)
+				ClearTilesAndWallsInRect(originX, originY, data.Width, data.Height);
+
+			minX = int.MaxValue;
+			minY = int.MaxValue;
+			int maxX = int.MinValue;
+			int maxY = int.MinValue;
+			Item wallTemplate = CreateTemplateItem(30);
+			var furnitureLater = new List<LegacyFurnitureJob>();
+			var furnitureAnchors = new HashSet<long>();
+			CreateWandBlueprintPlacementOrder.BuildLegacyPassIndices(data, out int[] mainCells);
+			for (int m = 0; m < mainCells.Length; m++)
+			{
+				int i = mainCells[m];
+				int tx = originX + i % data.Width;
+				int ty = originY + i / data.Width;
+				if (tx >= 0 && ty >= 0 && tx < Main.maxTilesX && ty < Main.maxTilesY)
+				{
+					minX = Math.Min(minX, tx);
+					minY = Math.Min(minY, ty);
+					maxX = Math.Max(maxX, tx);
+					maxY = Math.Max(maxY, ty);
+					ApplyLegacyMainLoopCell(player, data, originX, originY, i, wallTemplate, furnitureLater, furnitureAnchors);
+				}
+			}
+
+			for (int j = 0; j < furnitureLater.Count; j++)
+				ApplyLegacyFurnitureCell(player, furnitureLater[j]);
+
+			if (minX == int.MaxValue)
+			{
+				outW = 0;
+				outH = 0;
+				return false;
+			}
+
+			outW = maxX - minX + 1;
+			outH = maxY - minY + 1;
+			return true;
+		}
+
+		private static bool PlaceLegacySortMapViaServerActions(Terraria.Player player, BuildingData data, int originX, int originY,
+			out int minX, out int minY, out int outW, out int outH)
+		{
+			minX = int.MaxValue;
+			minY = int.MaxValue;
+			int maxX = int.MinValue;
+			int maxY = int.MinValue;
+			int wallType = GetDefaultWallType();
+			var furnitureLater = new List<LegacyFurnitureJob>();
+			var furnitureAnchors = new HashSet<long>();
+			CreateWandBlueprintPlacementOrder.BuildLegacyPassIndices(data, out int[] mainCells);
+
+			for (int m = 0; m < mainCells.Length; m++)
+			{
+				int i = mainCells[m];
+				int tx = originX + i % data.Width;
+				int ty = originY + i / data.Width;
+				if (!IsInWorldTile(tx, ty))
+					continue;
+
+				minX = Math.Min(minX, tx);
+				minY = Math.Min(minY, ty);
+				maxX = Math.Max(maxX, tx);
+				maxY = Math.Max(maxY, ty);
+
+				TryPlaceLegacyServerCell(player, tx, ty, data.TileInfos[i], wallType, null, null, null, furnitureLater,
+					furnitureAnchors);
+			}
+
+			for (int i = 0; i < furnitureLater.Count; i++)
+				TryPlaceFurnitureViaServer(player, furnitureLater[i],
+					clearBeforePlace: CreateWandSelectionState.ClearAreaBeforePlace);
+
+			if (minX == int.MaxValue)
+			{
+				outW = 0;
+				outH = 0;
+				return false;
+			}
+
+			outW = maxX - minX + 1;
+			outH = maxY - minY + 1;
+			return true;
+		}
+
+		/// <summary>联机客户端：分块 <c>NetMessage.SendTileSquare</c> (20) 同步 <see cref="Main.tile"/> 矩形。</summary>
+		public static void SyncTileRegionToServerIfMpClient(int minX, int minY, int width, int height, bool force = false)
+		{
+			if (Main.netMode != 1 || width <= 0 || height <= 0)
+				return;
+			if (!force && !CreateWandSelectionState.MpRegionSyncAfterStaggeredBlueprint)
+				return;
+
+			int startX = Math.Max(1, minX);
+			int startY = Math.Max(1, minY);
+			int endX = Math.Min(Main.maxTilesX, minX + width);
+			int endY = Math.Min(Main.maxTilesY, minY + height);
+			if (startX >= endX || startY >= endY)
+				return;
+
+			CreateWandMpDebugLog.Write("msg20 SendTileSquare NetMessage.SendTileSquare chunks region min=(" + minX + "," + minY +
+			                          ") size=" + width + "x" + height);
+
+			// TShock SendTileRectHandler: width/length must be <= 4 (see TShockAPI Handlers/SendTileRectHandler.cs).
+			const int maxChunk = 4;
+			for (int ty = startY; ty < endY; ty += maxChunk)
+			{
+				int ph = Math.Min(maxChunk, endY - ty);
+				for (int tx = startX; tx < endX; tx += maxChunk)
+				{
+					int pw = Math.Min(maxChunk, endX - tx);
+					NetMessage.SendTileSquare(-1, tx, ty, pw, ph, TileChangeType.None);
+				}
+			}
+
+			WorldGen.RangeFrame(startX, startY, endX, endY);
+		}
+
+		/// <summary>联机客户端：仅本地帧刷新，不发包。</summary>
+		internal static void MpClientRangeFrameRect(int minX, int minY, int width, int height)
+		{
+			if (Main.netMode != 1 || width <= 0 || height <= 0)
+				return;
+			int startX = Math.Max(1, minX);
+			int startY = Math.Max(1, minY);
+			int endX = Math.Min(Main.maxTilesX, minX + width);
+			int endY = Math.Min(Main.maxTilesY, minY + height);
+			if (startX >= endX || startY >= endY)
+				return;
+			WorldGen.RangeFrame(startX, startY, endX, endY);
+		}
+
+		/// <summary>与左键铺设对齐：鼠标对准中心时的原点与宽高（预设 / 蓝图）。</summary>
+		public static bool TryGetCursorPlacementOriginAndSize(out int ox, out int oy, out int w, out int h)
+		{
+			ox = oy = w = h = 0;
+			Point mouseTile = Main.MouseWorld.ToTileCoordinates();
+			if (CreateWandSelectionState.SelectedKind == BlueprintKind.BuiltinPreset)
+			{
+				switch (CreateWandSelectionState.SelectedPreset)
+				{
+					case PlacePreset.Stone3x3:
+						ox = mouseTile.X - 1;
+						oy = mouseTile.Y - 1;
+						w = 3;
+						h = 3;
+						return true;
+					case PlacePreset.WoodPlatform5:
+						ox = mouseTile.X - 2;
+						oy = mouseTile.Y;
+						w = 5;
+						h = 1;
+						return true;
+					case PlacePreset.Dirt2x2:
+						ox = mouseTile.X;
+						oy = mouseTile.Y;
+						w = 2;
+						h = 2;
+						return true;
+					default:
+						return false;
+				}
+			}
+
+			CreateWandPngLibrary.EnsureReload();
+			if (CreateWandPngLibrary.Entries.Count == 0)
+				return false;
+			if (CreateWandSelectionState.SelectedDatamapIndex < 0 ||
+			    CreateWandSelectionState.SelectedDatamapIndex >= CreateWandPngLibrary.Entries.Count)
+				return false;
+			BuildingData data = CreateWandPngLibrary.Entries[CreateWandSelectionState.SelectedDatamapIndex].Data;
+			if (data == null || data.Width <= 0 || data.Height <= 0)
+				return false;
+			w = data.Width;
+			h = data.Height;
+			ox = mouseTile.X - w / 2;
+			oy = mouseTile.Y - h / 2;
+			return true;
+		}
+
+		private static void ApplyFlipHack(BuildingData.TileInfo info, int x, int y)
+		{
+			if (!IsInWorldTile(x, y))
+				return;
+
+			BuildingData.TileSort sort = info.Sort;
+			if (sort <= BuildingData.TileSort.Bed)
+			{
+				if (sort != BuildingData.TileSort.Chair)
+				{
+					if (sort != BuildingData.TileSort.Bed)
+						return;
+					goto IL_0064;
+				}
+			}
+			else
+			{
+				if (sort == BuildingData.TileSort.Bathtub)
+					goto IL_0064;
+				if (sort != BuildingData.TileSort.Toilet)
+					return;
+			}
+
+			if (info.Flip)
+			{
+				Tile tile = new Tile(y * Main.maxTilesX + x);
+				if (tile == null)
+					return;
+				tile.frameX += 18;
+				if (IsInWorldTile(x, y - 1))
+				{
+					Tile tile2 = new Tile(y - 1 * Main.maxTilesX + x);
+					if (tile2 != null)
+						tile2.frameX += 18;
+				}
+
+				return;
+			}
+
+			return;
+			IL_0064:
+			if (!info.Flip)
+			{
+				for (int i = -1; i < 3; i++)
+				{
+					for (int j = -1; j < 1; j++)
+					{
+						int tx = x + i;
+						int ty = y + j;
+						if (!IsInWorldTile(tx, ty))
+							continue;
+						Tile tile3 = new Tile(ty * Main.maxTilesX + tx);
+						if (tile3 != null)
+							tile3.frameX -= 72;
+					}
+				}
+			}
+		}
+
+		private static void TryPlaceWallRaw(Terraria.Player player, int x, int y, Item wallItem)
+		{
+			if (wallItem.createWall <= 0)
+				return;
+			if (UseMpLocalSilentClears)
+			{
+				Tile tw = new Tile(y * Main.maxTilesX + x);
+				if (tw != null && tw.wall != 0)
+					tw.Clear(TileDataType.Wall | TileDataType.WallPaint);
+			}
+			else
+				WorldGen.KillWall(x, y, false);
+			if (new Tile(y * Main.maxTilesX + x).wall != 0)
+				return;
+			int w = wallItem.createWall;
+			WorldGen.PlaceWall(x, y, w, false);
+		}
+
+		private static bool TryPlaceTileFromItem(Terraria.Player player, int x, int y, Item item, bool localForMpRegionSync = false)
+		{
+			if (item.createTile <= -1)
+				return false;
+			if (new Tile(y * Main.maxTilesX + x).active())
+			{
+				if (UseMpLocalSilentClears || localForMpRegionSync)
+					new Tile(y * Main.maxTilesX + x).ClearTileAndPaint();
+				else
+					WorldGen.KillTile(x, y, false, false, true);
+			}
+			if (WorldGen.PlaceTile(x, y, item.createTile, false, true, player.whoAmI,
+				    item.placeStyle))
+			{
+				WorldGen.SquareTileFrame(x, y, true);
+				return true;
+			}
+
+			return false;
+		}
+
+		private static Item CreateTemplateItem(int itemId)
+		{
+			var item = new Item();
+			item.SetDefaults(itemId);
+			return item;
+		}
+
+		private static int GetItemIdForSort(BuildingData.TileSort sort)
+		{
+			switch (sort)
+			{
+				case BuildingData.TileSort.Block: return 3;
+				case BuildingData.TileSort.Platform: return 94;
+				case BuildingData.TileSort.Workbench: return 36;
+				case BuildingData.TileSort.Table: return 32;
+				case BuildingData.TileSort.Chair: return 34;
+				case BuildingData.TileSort.Door: return 25;
+				case BuildingData.TileSort.Chest: return 48;
+				case BuildingData.TileSort.Bed: return 224;
+				case BuildingData.TileSort.Bookcase: return 354;
+				case BuildingData.TileSort.Bathtub: return 336;
+				case BuildingData.TileSort.Candelabra: return 349;
+				case BuildingData.TileSort.Candle: return 105;
+				case BuildingData.TileSort.Chandelier: return 106;
+				case BuildingData.TileSort.Clock: return 359;
+				case BuildingData.TileSort.Dresser: return 334;
+				case BuildingData.TileSort.Lamp: return 2085;
+				case BuildingData.TileSort.Lantern: return 344;
+				case BuildingData.TileSort.Piano: return 333;
+				case BuildingData.TileSort.Sink: return 2827;
+				case BuildingData.TileSort.Sofa: return 335;
+				case BuildingData.TileSort.Toilet: return 358;
+				case BuildingData.TileSort.Torch: return 8;
+				case BuildingData.TileSort.Campfire: return 966;
+				default: return 3;
+			}
+		}
+
+		private static void SendTileManipulation(Terraria.Player player, TileManipulationAction action, int x, int y, int type, int style)
+		{
+			CreateWandMpDebugLog.Write("msg17 TileManipulation NetMessage.SendData action=" + (int)action + " x=" + x + " y=" + y +
+			                          " type=" + type + " style=" + style + " who=" + player.whoAmI + " netMode=" + Main.netMode);
+			NetMessage.SendData((int)MessageID.TileManipulation, -1, -1, null, (int)action, x, y, type, style, player.whoAmI, 0);
+		}
+
+		/// <summary>在粘贴蓝图前整块清空墙体与物块（可选）。联机且 <see cref="CreateWandSelectionState.MpLocalOnlyNoNet"/> 时用 <c>Tile.ClearEverything</c> 等，避免 <c>WorldGen.Kill*</c> 可能触网。</summary>
+		public static void ClearTilesAndWallsInRect(int originX, int originY, int width, int height)
+		{
+			for (int j = 0; j < height; j++)
+			for (int i = 0; i < width; i++)
+			{
+				int x = originX + i;
+				int y = originY + j;
+				if (x < 0 || y < 0 || x >= Main.maxTilesX || y >= Main.maxTilesY)
+					continue;
+				Tile tile = new Tile(y * Main.maxTilesX + x);
+				if (tile == null)
+					continue;
+				if (UseMpLocalSilentClears)
+				{
+					if (tile.active() || tile.wall != 0)
+						tile.ClearEverything();
+					continue;
+				}
+				if (tile.active())
+					WorldGen.KillTile(x, y, false, false, true);
+				if (tile.wall != 0)
+					WorldGen.KillWall(x, y, false);
+			}
+		}
+
+
+		/// <summary>检查格子是否有任何线路（红/蓝/绿/黄线或制动器）。</summary>
+		private static bool HasAnyWire(Tile t) =>
+			t != null && (t.wire() || t.wire2() || t.wire3() || t.wire4() || t.actuator());
+
+
+
+		/// <summary>
+		/// 钢丝钳(ID=510)模拟：换持一次 → WorldGen.KillWire 全色 → msg17 → 本地回退。
+		/// 一把剪红/蓝/绿/黄四色线 + 制动器，只需一次换持。
+		/// </summary>
+		private static void ClearWiresAtCell(Terraria.Player player, int x, int y)
+		{
+			const int WireCutterItemId = 510;
+			Tile t = new Tile(y * Main.maxTilesX + x);
+			if (t == null)
+				return;
+
+			bool hasWire = t.wire() || t.wire2() || t.wire3() || t.wire4();
+			bool hasActuator = t.actuator();
+			if (!hasWire && !hasActuator)
+				return;
+
+			bool isMp = Main.netMode == 1 && !CreateWandSelectionState.MpLocalOnlyNoNet;
+
+			if (isMp)
+			{
+				CreateWandSurvivalRemoteCompat.TryExecuteHandheldTool(player, x, y, WireCutterItemId, () =>
+				{
+					if (t.wire()) { WorldGen.KillWire(x, y); NetMessage.SendData((int)MessageID.TileManipulation, -1, -1, null, 6, x, y); }
+					if (t.wire2()) { WorldGen.KillWire2(x, y); NetMessage.SendData((int)MessageID.TileManipulation, -1, -1, null, 11, x, y); }
+					if (t.wire3()) { WorldGen.KillWire3(x, y); NetMessage.SendData((int)MessageID.TileManipulation, -1, -1, null, 13, x, y); }
+					if (t.wire4()) { WorldGen.KillWire4(x, y); NetMessage.SendData((int)MessageID.TileManipulation, -1, -1, null, 17, x, y); }
+					if (t.actuator()) { WorldGen.KillActuator(x, y); NetMessage.SendData((int)MessageID.TileManipulation, -1, -1, null, 9, x, y); }
+					return true;
+				});
+			}
+			else
+			{
+				if (t.wire()) WorldGen.KillWire(x, y);
+				if (t.wire2()) WorldGen.KillWire2(x, y);
+				if (t.wire3()) WorldGen.KillWire3(x, y);
+				if (t.wire4()) WorldGen.KillWire4(x, y);
+				if (t.actuator()) WorldGen.KillActuator(x, y);
+			}
+
+			// 本地回退兜底
+			t.wire(false);
+			t.wire2(false);
+			t.wire3(false);
+			t.wire4(false);
+			t.actuator(false);
+		}
+
+		/// <summary>
+
+		/// <summary>
+		/// 「仅删除」模式一键全清：联机时换持铜镐 → KillTile/KillWall → 清线 → 本地兜底。
+		/// 换持镐子是为了让 TShock Bouncer 的 selectedItem.pick>0 校验通过（魔杖 pick=0）。
+		/// </summary>
+		public static void ClearEntireBlueprintFast(Terraria.Player player, BuildingData data, int originX, int originY)
+		{
+			if (data == null || player == null)
+				return;
+
+			int w = data.Width;
+			int h = data.Height;
+			int cleared = 0;
+			bool realMp = Main.netMode == 1 && !CreateWandSelectionState.MpLocalOnlyNoNet;
+
+			if (realMp)
+			{
+				// 换持铜镐（pick>0）一次，循环内所有 msg17 KillTile 才能过 TShock 校验
+				CreateWandSurvivalRemoteCompat.TryExecuteWhileHoldingPlaceMaterial(
+					player, originX, originY, ItemID.CopperPickaxe, 1, () =>
+				{
+					for (int j = 0; j < h; j++)
+					for (int i = 0; i < w; i++)
+					{
+						int x = originX + i;
+						int y = originY + j;
+						if (!IsInWorldTile(x, y)) continue;
+						Tile t = new Tile(y * Main.maxTilesX + x);
+						if (t == null) continue;
+
+						bool hasTile = t.active();
+						bool hasWall = t.wall != 0;
+						bool hasWire = HasAnyWire(t);
+						if (!hasTile && !hasWall && !hasWire) continue;
+
+						if (hasTile)
+							SendTileManipulation(player, TileManipulationAction.KillTile, x, y, 0, 0);
+						if (hasWall)
+							SendTileManipulation(player, TileManipulationAction.KillWall, x, y, 0, 0);
+						if (hasWire)
+							ClearWiresAtCell(player, x, y);
+
+						// 本地兜底
+						if (t.active()) t.ClearTileAndPaint();
+						if (t.wall != 0) t.wall = 0;
+						t.wire(false); t.wire2(false); t.wire3(false); t.wire4(false); t.actuator(false);
+
+						cleared++;
+					}
+					return true;
+				});
+			}
+			else
+			{
+				for (int j = 0; j < h; j++)
+				for (int i = 0; i < w; i++)
+				{
+					int x = originX + i;
+					int y = originY + j;
+					if (!IsInWorldTile(x, y)) continue;
+					Tile t = new Tile(y * Main.maxTilesX + x);
+					if (t == null) continue;
+					if (t.active() || t.wall != 0 || HasAnyWire(t))
+					{
+						t.ClearEverything();
+						cleared++;
+					}
+				}
+			}
+
+			CreateWandMpDebugLog.Write("diag fastClear area=(" + originX + "," + originY + ") " + w + "x" + h +
+			                           " cellsCleared=" + cleared + " netMode=" + Main.netMode +
+			                           " realMp=" + realMp);
+		}
+	}
+}
