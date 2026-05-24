@@ -61,6 +61,23 @@ dotnet build "TerrariaPatchLoader\TerrariaLoader\TerrariaLoader.csproj" -c Relea
 
 ---
 
+## 更新日志
+
+### 2026-05-24
+- **新增 ImproveGamePatch**：6 个 QoL 功能 + `~` 控制面板（滑动开关 UI）
+  - VeinMiner（连锁挖矿）、BannerPatch（背包旗帜）、FasterExtractinator（快速提炼）
+  - PortableStation（便携制作站）、InfiniteBuff（带 1 瓶药水=永久 Buff）、HomeTeleport（H 键回家）
+- **CreateWandPatch 热键调整**：
+  - 移除 `1` `2` `3`（预设）和 `[`（逐格切换），改用 UI 面板设置
+  - 恢复 `]` 键（清空模式）
+  - 新增 `C` 键（材料消耗开关：开启后每格扣背包 1 个对应材料）
+- 修复：`Player.GetItem` Harmony 歧义、性能卡顿（共享 Keyboard 状态）
+
+### 更早版本
+见 [Releases](https://github.com/luruizhe953-netizen/tr-createwand/releases)
+
+---
+
 ## 功能概要
 
 - 预设与 PNG 蓝图：`Documents\My Games\Terraria\CreateWand\*.png`
