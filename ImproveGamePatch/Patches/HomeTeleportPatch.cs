@@ -94,6 +94,7 @@ namespace ImproveGamePatch.Patches
                 return;
             }
 
+            if (Main.drawingPlayerChat) { _wasKeyDown = false; return; }
             var ks = ControlPanel.Kb;
             bool keyDown = ks.IsKeyDown(Keys.H);
 

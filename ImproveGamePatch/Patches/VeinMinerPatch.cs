@@ -101,10 +101,12 @@ namespace ImproveGamePatch.Patches
                 int ox = (int)(key >> 32);
                 int oy = (int)(key & 0xFFFFFFFF);
 
-                // Send tile-break request to server (msg17, action 0 = KillTile).
-                // Server processes each msg17, breaks the tile, and syncs back.
-                // No client-side KillTile – avoids item-dupe / desync risk.
+                // Send break request to server
                 NetMessage.SendData(17, -1, -1, null, 0, ox, oy);
+
+                // Also break locally (no item drop — server handles items)
+                // This makes tiles disappear instantly instead of waiting for server sync
+                WorldGen.KillTile(ox, oy, false, false, true);
             }
         }
 

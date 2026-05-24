@@ -49,7 +49,7 @@ namespace ImproveGamePatch.UI
         public static void Update()
         {
             var ks = Kb;
-            bool k = ks.IsKeyDown(_hotkey);
+            bool k = ks.IsKeyDown(_hotkey) && !Main.drawingPlayerChat;
             if (k && !_wasKeyDown) _open = !_open;
             _wasKeyDown = k;
             if (!_open) return;
