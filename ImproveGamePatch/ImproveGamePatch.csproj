@@ -1,0 +1,92 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TerrariaSteam Condition="'$(TerrariaSteam)' == ''">D:\SteamLibrary\steamapps\common\Terraria</TerrariaSteam>
+    <TargetFramework>net472</TargetFramework>
+    <Nullable>disable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <PlatformTarget>x86</PlatformTarget>
+    <RootNamespace>ImproveGamePatch</RootNamespace>
+    <AssemblyName>ImproveGamePatch</AssemblyName>
+    <_XnaRef86>$(MSBuildProgramFiles32)\Microsoft XNA\XNA Game Studio\v4.0\References\Windows\x86</_XnaRef86>
+  </PropertyGroup>
+
+  <Choose>
+    <When Condition="Exists('$(TerrariaSteam)\Terraria.exe') And Exists('$(TerrariaSteam)\ReLogic.dll')">
+      <PropertyGroup>
+        <GameLibDir>$(TerrariaSteam)</GameLibDir>
+      </PropertyGroup>
+    </When>
+    <When Condition="Exists('$(MSBuildProjectDirectory)\..\CreateWandPatch\lib\Terraria.exe') And Exists('$(MSBuildProjectDirectory)\..\CreateWandPatch\lib\ReLogic.dll')">
+      <PropertyGroup>
+        <GameLibDir>$(MSBuildProjectDirectory)\..\CreateWandPatch\lib</GameLibDir>
+      </PropertyGroup>
+    </When>
+    <Otherwise>
+      <PropertyGroup>
+        <GameLibDir />
+      </PropertyGroup>
+    </Otherwise>
+  </Choose>
+
+  <Target Name="ErrTerrariaRefs" BeforeTargets="ResolveAssemblyReferences" Condition="'$(GameLibDir)' == ''">
+    <Error Text="找不到 Terraria.exe 或 ReLogic.dll。请设置 TerrariaSteam 属性或复制到 CreateWandPatch\lib\" />
+  </Target>
+
+  <ItemGroup>
+    <PackageReference Include="Lib.Harmony" Version="2.3.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="System.Drawing" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(GameLibDir)' != ''">
+    <Reference Include="Terraria">
+      <HintPath>$(GameLibDir)\Terraria.exe</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="ReLogic">
+      <HintPath>$(GameLibDir)\ReLogic.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Newtonsoft.Json" Condition="Exists('$(GameLibDir)\Newtonsoft.Json.dll')">
+      <HintPath>$(GameLibDir)\Newtonsoft.Json.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="FNA" Condition="Exists('$(GameLibDir)\FNA.dll')">
+      <HintPath>$(GameLibDir)\FNA.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(GameLibDir)' != '' And !Exists('$(GameLibDir)\FNA.dll') And Exists('$(_XnaRef86)\Microsoft.Xna.Framework.dll')">
+    <Reference Include="Microsoft.Xna.Framework">
+      <HintPath>$(_XnaRef86)\Microsoft.Xna.Framework.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Microsoft.Xna.Framework.Game" Condition="Exists('$(_XnaRef86)\Microsoft.Xna.Framework.Game.dll')">
+      <HintPath>$(_XnaRef86)\Microsoft.Xna.Framework.Game.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Microsoft.Xna.Framework.Graphics" Condition="Exists('$(_XnaRef86)\Microsoft.Xna.Framework.Graphics.dll')">
+      <HintPath>$(_XnaRef86)\Microsoft.Xna.Framework.Graphics.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(GameLibDir)' != '' And !Exists('$(GameLibDir)\FNA.dll') And !Exists('$(_XnaRef86)\Microsoft.Xna.Framework.dll') And Exists('$(MSBuildProjectDirectory)\..\CreateWandPatch\lib\Microsoft.Xna.Framework.dll')">
+    <Reference Include="Microsoft.Xna.Framework">
+      <HintPath>$(MSBuildProjectDirectory)\..\CreateWandPatch\lib\Microsoft.Xna.Framework.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Microsoft.Xna.Framework.Game" Condition="Exists('$(MSBuildProjectDirectory)\..\CreateWandPatch\lib\Microsoft.Xna.Framework.Game.dll')">
+      <HintPath>$(MSBuildProjectDirectory)\..\CreateWandPatch\lib\Microsoft.Xna.Framework.Game.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Microsoft.Xna.Framework.Graphics" Condition="Exists('$(MSBuildProjectDirectory)\..\CreateWandPatch\lib\Microsoft.Xna.Framework.Graphics.dll')">
+      <HintPath>$(MSBuildProjectDirectory)\..\CreateWandPatch\lib\Microsoft.Xna.Framework.Graphics.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+</Project>
