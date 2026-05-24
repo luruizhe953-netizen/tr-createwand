@@ -124,6 +124,9 @@ namespace CreateWandPatch.Content
 		/// </summary>
 		public static bool MpSurvivalInventoryPlaceFirst = true;
 
+		/// <summary>从背包消耗材料（每格1个）。按 C 键开关，默认关。</summary>
+		public static bool ConsumePlacementItems = false;
+
 		/// <summary>
 		/// 生存联机放置：当背包内对应材料耗尽时，若玩家当前打开了箱子，尝试从该箱自动补到背包再继续放置。
 		/// </summary>

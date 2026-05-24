@@ -132,6 +132,15 @@ namespace CreateWandPatch.Patches
 					}
 				}
 
+				// C — toggle material consumption (works regardless of FancyUI)
+				if (KeyPressed(kb, prevKb, Keys.C))
+				{
+					CreateWandSelectionState.ConsumePlacementItems = !CreateWandSelectionState.ConsumePlacementItems;
+					Terraria.CombatText.NewText(p.getRect(),
+						CreateWandSelectionState.ConsumePlacementItems ? new Microsoft.Xna.Framework.Color(255, 200, 100) : Microsoft.Xna.Framework.Color.Gray,
+						CreateWandSelectionState.ConsumePlacementItems ? "[魔杖] 材料消耗：开（每格扣1个）" : "[魔杖] 材料消耗：关", false, false);
+				}
+
 				// Fancy UI 打开时避免与界面/其它 IngameFancy 状态抢键（创造魔杖原版面板亦会走此分支）
 				if (Main.inFancyUI)
 					return;
@@ -166,16 +175,6 @@ namespace CreateWandPatch.Patches
 					CreateWandSelectionState.NextPlacementRepeatCount();
 					Terraria.CombatText.NewText(p.getRect(), new Microsoft.Xna.Framework.Color(255, 200, 100),
 						"[魔杖] 重复放置 " + CreateWandSelectionState.PlacementRepeatCount + " 次（防回滚 · 按 O 切换）", false, false);
-				}
-				else if (KeyPressed(kb, prevKb, Keys.OemOpenBrackets))
-				{
-					CreateWandSelectionState.ToggleStaggeredPlacement();
-					Terraria.CombatText.NewText(p.getRect(), new Microsoft.Xna.Framework.Color(176, 196, 222),
-						CreateWandSelectionState.UseStaggeredPlacementEffective
-							? "[魔杖] 铺设：逐格（原版互动距离，" + CreateWandStaggeredPlacementQueue.GetStaggeredSpeedHintForCombatText() + "；不扣背包物块）"
-							: "[魔杖] 铺设：快速（免耗·无限距离，整图一帧；不扣背包物块）",
-						false, false);
-					CreateWandWorldPreview.InvalidateCache();
 				}
 				else if (KeyPressed(kb, prevKb, Keys.OemSemicolon))
 				{
@@ -213,28 +212,7 @@ namespace CreateWandPatch.Patches
 					SoundEngine.PlaySound(12, -1, -1, 1, 0.85f, 0f);
 				}
 
-				if (KeyPressed(kb, prevKb, Keys.D1))
-				{
-					CreateWandSelectionState.SelectedKind = BlueprintKind.BuiltinPreset;
-					CreateWandSelectionState.SelectedPreset = PlacePreset.Stone3x3;
-					Terraria.CombatText.NewText(p.getRect(), Microsoft.Xna.Framework.Color.LightBlue, "[魔杖] 预设：石块 3×3", false, false);
-					CreateWandWorldPreview.InvalidateCache();
-				}
-				else if (KeyPressed(kb, prevKb, Keys.D2))
-				{
-					CreateWandSelectionState.SelectedKind = BlueprintKind.BuiltinPreset;
-					CreateWandSelectionState.SelectedPreset = PlacePreset.WoodPlatform5;
-					Terraria.CombatText.NewText(p.getRect(), Microsoft.Xna.Framework.Color.LightBlue, "[魔杖] 预设：木平台×5", false, false);
-					CreateWandWorldPreview.InvalidateCache();
-				}
-				else if (KeyPressed(kb, prevKb, Keys.D3))
-				{
-					CreateWandSelectionState.SelectedKind = BlueprintKind.BuiltinPreset;
-					CreateWandSelectionState.SelectedPreset = PlacePreset.Dirt2x2;
-					Terraria.CombatText.NewText(p.getRect(), Microsoft.Xna.Framework.Color.LightBlue, "[魔杖] 预设：泥土 2×2", false, false);
-					CreateWandWorldPreview.InvalidateCache();
-				}
-				else if (KeyPressed(kb, prevKb, Keys.OemMinus) || KeyPressed(kb, prevKb, Keys.Subtract))
+				if (KeyPressed(kb, prevKb, Keys.OemMinus) || KeyPressed(kb, prevKb, Keys.Subtract))
 				{
 					CreateWandPngLibrary.Reload();
 					CreateWandSelectionState.SelectedKind = BlueprintKind.DataMap;

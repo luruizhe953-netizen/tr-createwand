@@ -95,15 +95,28 @@ namespace TerrariaPatchInjector
 				};
 
 				// 用 Load(bytes) 加载 CreateWandPatch.dll 进主域（使其依赖解析到真实 Terraria 类型）
-				var patchBytes = File.ReadAllBytes(Path.Combine(dir, "CreateWandPatch.dll"));
-				var patchAsm = Assembly.Load(patchBytes);
+				var cwpBytes = File.ReadAllBytes(Path.Combine(dir, "CreateWandPatch.dll"));
+				var cwpAsm = Assembly.Load(cwpBytes);
 
 				// 通过反射调用 Bootstrap.Init()
-				var bootstrapType = patchAsm.GetType("CreateWandPatch.Bootstrap")
+				var cwpBootstrapType = cwpAsm.GetType("CreateWandPatch.Bootstrap")
 					?? throw new InvalidOperationException("找不到 CreateWandPatch.Bootstrap");
-				var initMethod = bootstrapType.GetMethod("Init", BindingFlags.Public | BindingFlags.Static)
+				var cwpInitMethod = cwpBootstrapType.GetMethod("Init", BindingFlags.Public | BindingFlags.Static)
 					?? throw new InvalidOperationException("找不到 Bootstrap.Init");
-				initMethod.Invoke(null, null);
+				cwpInitMethod.Invoke(null, null);
+
+				// 加载 ImproveGamePatch.dll（改善体验补丁集）
+				var igpPath = Path.Combine(dir, "ImproveGamePatch.dll");
+				if (File.Exists(igpPath))
+				{
+					var igpBytes = File.ReadAllBytes(igpPath);
+					var igpAsm = Assembly.Load(igpBytes);
+					var igpBootstrapType = igpAsm.GetType("ImproveGamePatch.Bootstrap")
+						?? throw new InvalidOperationException("找不到 ImproveGamePatch.Bootstrap");
+					var igpInitMethod = igpBootstrapType.GetMethod("Init", BindingFlags.Public | BindingFlags.Static)
+						?? throw new InvalidOperationException("找不到 Bootstrap.Init");
+					igpInitMethod.Invoke(null, null);
+				}
 			}
 			catch (Exception ex)
 			{

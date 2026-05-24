@@ -27,5 +27,6 @@
     <Copy SourceFiles="$(_InjectorDir)TerrariaPatchInjector.dll" DestinationFolder="$(OutputPath)" SkipUnchangedFiles="true" />
     <Copy SourceFiles="$(_PatchDir)CreateWandPatch.dll" DestinationFolder="$(OutputPath)" SkipUnchangedFiles="true" />
     <Copy SourceFiles="$(_PatchDir)0Harmony.dll" DestinationFolder="$(OutputPath)" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="$(MSBuildThisFileDirectory)..\..\ImproveGamePatch\bin\$(Configuration)\net472\ImproveGamePatch.dll" DestinationFolder="$(OutputPath)" SkipUnchangedFiles="true" />
   </Target>
 </Project>
