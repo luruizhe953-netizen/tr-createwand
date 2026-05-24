@@ -80,15 +80,28 @@ dotnet build "TerrariaPatchLoader\TerrariaLoader\TerrariaLoader.csproj" -c Relea
 
 ## 功能概要
 
-- 预设与 PNG 蓝图：`Documents\My Games\Terraria\CreateWand\*.png`
-- **色图（Legacy）：** 按颜色分类铺砖（模板物块，联机已验证交换+发包链）
-- **精确蓝图（cwmap / qot）：** 墙/物块/平台 **1:1** 类型与样式；联机与非精确路径共用 `TryPlaceLegacyServerCell`（背包材料交换 + 装备 sync5）
-- **涂刷与线路：** 漆刷/滚刷 + 四色线/制动器，手持工具链分阶段执行
-- **可调速逐格：** `<` / `>` 调节格间延迟（0~30 帧），进度条可视化
-- **重复放置：** `O` 设定次数（最多 10×），自动重新入队防服务器回滚
-- **快速清区：** `]` 三档切换（关/逐格/一键），`K` 一键全清含线路
-- 联机逐格队列，降低 TShock 铺砖阈值触发（蛛网化）
-- 调试日志：`CreateWandPatch-mp.log`（可选：F9 / Shift+F9 / Ctrl+F9）
+### CreateWandPatch（创造魔杖）
+
+- PNG 蓝图：`Documents\My Games\Terraria\CreateWand\*.png`
+- **色图（Legacy）**：按颜色分类铺砖
+- **精确蓝图（cwmap / qot）**：墙/物块/平台 1:1 类型与样式
+- **材料消耗**：`C` 键开关，开启后每格扣背包 1 个对应材料
+- **可调速逐格**：`<` `>` 调节格间延迟
+- **重复放置**：`O` 设定次数（1~10×）
+- **快速清区**：`]` 三档切换，`K` 一键全清
+- 联机逐格队列，降低 TShock 阈值触发
+- 调试日志：F9 / Shift+F9 / Ctrl+F9
+
+### ImproveGamePatch（改善体验，按 `~` 打开面板）
+
+| 功能 | 说明 |
+|------|------|
+| VeinMiner | 连锁挖矿（BFS 连挖矿脉） |
+| BannerPatch | 背包旗帜提供 Buff |
+| FasterExtractinator | 快速提炼机 |
+| PortableStation | 便携制作站（背包内生效） |
+| InfiniteBuff | 带 1 瓶药水 = 永久 Buff |
+| HomeTeleport | H 键一键回家 |
 
 ### 游戏内热键
 
